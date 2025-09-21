@@ -5,7 +5,7 @@ const userSockets = new Map();
 
 export function initSocket(server,origins) {
     io = new Server(server , {
-        cors:{origin:"http://localhost:5173"}
+        cors:{origin:["http://localhost:5173",'https://stocks-server-kcro.onrender.com']}
     })
 
     io.on("connection", (socket) => {

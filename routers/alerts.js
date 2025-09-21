@@ -67,7 +67,7 @@ alertRouter.patch("/:userId/:id", async (req, res) => {
 
     try {
         let result;
-        console.log(condition)
+       
         if (active !== undefined) {
             const alertQuery = `UPDATE alerts SET active = $1 WHERE id = $2 RETURNING *`;
             result = await pool.query(alertQuery, [active, id]);
