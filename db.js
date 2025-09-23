@@ -5,10 +5,10 @@ dotenv.config();
 
 const { Pool } = pkg;
 
-console.log("CONNECTION_STRING from env:", process.env.CONNECTION_STRING);
+console.log("CONNECTION_STRING from env:", process.env.DATABASE_URL);
 console.log("All env vars:", Object.keys(process.env));
 
-const connectionString = process.env.CONNECTION_STRING;
+const connectionString = process.env.DATABASE_URL;
 
 if (!connectionString) {
     console.error("❌ CONNECTION_STRING environment variable is not set!");
