@@ -16,7 +16,7 @@ if (!connectionString) {
 }
 
 
-const dbUrl = new URL(process.env.CONNECTION_STRING)
+const dbUrl = new URL(process.env.DATABASE_URL)
 
 const pool = new Pool({
     user:dbUrl.username,
