@@ -14,7 +14,7 @@ loginRouter.post("/",async (req,res) => {
     try {
         const { email , password } = req.body;
         const result = await  pool.query('SELECT * FROM users WHERE email = $1',[email]);
-         console.log(Email)
+         console.log(email)
         if (result.rows.length === 0) {
             return res.status(401).json({ message: "user doesnt exist" });
         }
