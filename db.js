@@ -10,6 +10,7 @@ const dbUrl = new URL(process.env.CONNECTION_STRING)
 const pool = new Pool({
     user:dbUrl.username,
     password:dbUrl.password,
+    host:dbUrl.hostname,
     port:dbUrl.port,
     database:dbUrl.pathname.slice(1),
     ssl:{ rejectUnauthorized: false } 
