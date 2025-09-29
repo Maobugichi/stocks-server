@@ -19,7 +19,6 @@ import trendingRouter from "./routers/getTrendingNews.js";
 import alertRouter from "./routers/alerts.js";
 import sentimentRouter from "./routers/sentiment.js";
 import finnRouter from "./routers/finnNews.js";
-
 import oauthRouter from "./routers/oauth.js";
 import onboardRouter from "./routers/onboarding.js";
 import trendingPagePageRouter from "./routers/trending.js";
@@ -29,7 +28,7 @@ dotenv.config();
 
 const app = express();
 const port = 3000;
-const origins = ["http://localhost:5173"]
+const origins = ["http://localhost:5173","https://maobugichi.github.io"]
 const server = http.createServer(app);
 
 initSocket(server);
@@ -40,12 +39,12 @@ app.use(cookieParser());
 app.use(cors({
     origin:origins,
     credentials:true
-}))
+}));
 
 
 app.use("/api/sign-up/",router);
-app.use("/api/login/",loginRouter)
-app.use("/api/",checkAuth,dashRouter)
+app.use("/api/login/",loginRouter);
+app.use("/api/",checkAuth,dashRouter);
 app.use("/api/stocks/",stockrouter);
 app.use("/api/ticker/", tickerRouter);
 app.use("/api/save-port",savePortfolioRouter);
