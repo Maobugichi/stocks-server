@@ -27,15 +27,15 @@ loginRouter.post("/",async (req,res) => {
           return res.status(401).json({ message: "invalid credentials" });
         }
 
-        const token = jwt.sign({id: userId, username: user.username, email: user.email},jwtSecret,{ expiresIn:'1d'});
+        const token = jwt.sign({id: userId, username: user.username, email: user.email},jwtSecret,{ expiresIn:'7d'});
 
-        console.log(token)
-        res.cookie("token",token,{
+       
+        res.cookie("token", token, {
             httpOnly: true,
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            secure: process.env.NODE_ENV === "production",
-            maxAge: 24 * 60 * 60 * 1000,
-            path: "/"  
+            secure: true,           
+            sameSite: "none",     
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+            path: "/"
         })
         res.status(200).json({username:user.username, userId , email , onboarded:user.onboarded})
 
