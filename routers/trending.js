@@ -131,7 +131,6 @@ trendingPageRouter.get("/trending-stock", async (req, res) => {
   try {
     const cacheKey = 'trending_stock_full';
     
-    // Try to get complete response from cache first
     let cachedResponse = cache.get(cacheKey);
     if (cachedResponse) {
       console.log('Cache hit for full trending stock response');
@@ -217,7 +216,7 @@ trendingPageRouter.get("/trending-stock", async (req, res) => {
     res.json(responseData);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to fetch trending stocks" });
+    res.status(500).json(err);
   }
 });
 
@@ -245,7 +244,7 @@ trendingPageRouter.get('/trending-search', async (req, res) => {
   }
 });
 
-// Optional: Add cache statistics endpoint for monitoring
+
 trendingPageRouter.get('/cache-stats', (req, res) => {
   const stats = cache.getStats();
   res.json({
