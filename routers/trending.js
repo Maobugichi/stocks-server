@@ -215,7 +215,7 @@ trendingPageRouter.get("/trending-stock", async (req, res) => {
     
     res.json(responseData);
   } catch (err) {
-    console.error(err);
+   
     res.status(500).json(err);
   }
 });

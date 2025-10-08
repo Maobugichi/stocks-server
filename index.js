@@ -21,7 +21,7 @@ import sentimentRouter from "./routers/sentiment.js";
 import finnRouter from "./routers/finnNews.js";
 import oauthRouter from "./routers/oauth.js";
 import onboardRouter from "./routers/onboarding.js";
-import trendingPagePageRouter from "./routers/trending.js";
+import trendingPageRouter from "./routers/trending.js";
 
 
 dotenv.config();
@@ -58,7 +58,7 @@ app.use("/api/", sentimentRouter);
 app.use("/api/newsList" , finnRouter);
 app.use("/oauth", oauthRouter);
 app.use("/api/", onboardRouter);
-app.use("/api/", checkAuth, trendingPagePageRouter);
+app.use("/api/", checkAuth, trendingPageRouter);
 
 server.listen(port,() => {
     console.log(`server started on port ${port}`);
