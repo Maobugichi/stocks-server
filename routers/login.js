@@ -18,7 +18,7 @@ loginRouter.post("/",async (req,res) => {
         if (result.rows.length === 0) {
             return res.status(401).json({ message: "user doesnt exist" });
         }
-        console.log(result)
+       
         const user = result.rows[0]
         const dbPassword = user.password
         const userId = user.id
@@ -29,7 +29,6 @@ loginRouter.post("/",async (req,res) => {
 
         const token = jwt.sign({id: userId, username: user.username, email: user.email},jwtSecret,{ expiresIn:'7d'});
 
-       
         res.cookie("token", token, {
             httpOnly: true,
             secure: true,           
