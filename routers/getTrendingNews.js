@@ -1,4 +1,7 @@
+import { Router } from "express";
 import yahooFinance from "yahoo-finance2";
+
+
 yahooFinance.suppressNotices(["yahooSurvey"]);
 
 const trendingRouter = Router();
