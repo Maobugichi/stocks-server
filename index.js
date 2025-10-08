@@ -28,7 +28,7 @@ dotenv.config();
 
 const app = express();
 const port = 3000;
-const origins = ["http://localhost:5173","https://maobugichi.github.io"]
+const allowedOrigins = ["http://localhost:5173","https://maobugichi.github.io"]
 const server = http.createServer(app);
 
 initSocket(server);
@@ -36,10 +36,21 @@ initSocket(server);
 app.use(express.json());
 app.use(cookieParser());
 
-app.use(cors({
-    origin:origins,
-    credentials:true
-}));
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true); 
+      } else {
+        callback(new Error("Not allowed by CORS")); 
+      }
+    },
+    credentials: true, 
+  })
+);
 
 
 app.use("/api/sign-up/",router);
