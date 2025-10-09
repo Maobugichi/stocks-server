@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { checkAuth } from "../checkAuth";
+import { checkAuth } from "../checkAuth.js";
 
 const dashboardRouter = Router();
 
