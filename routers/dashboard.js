@@ -1,26 +1,10 @@
 import { Router } from "express";
-import pool from "../db.js";
+import { checkAuth } from "../checkAuth";
 
-const dashRouter = Router();
+const dashboardRouter = Router();
 
-dashRouter.get("/", async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    const result = await pool.query(
-      "SELECT id, username, email, onboarded, onboarding_step FROM users WHERE id = $1",
-      [userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    res.json(result.rows[0]); 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Something went wrong" });
-  }
+dashboardRouter.get("/", checkAuth, (req, res) => {
+  res.json({ message: "Dashboard data", user: req.user });
 });
 
-export default dashRouter;
+export default dashboardRouter;

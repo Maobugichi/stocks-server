@@ -69,7 +69,7 @@ app.use("/api/", sentimentRouter);
 app.use("/api/newsList" , finnRouter);
 app.use("/oauth", oauthRouter);
 app.use("/api/", onboardRouter);
-app.use("/api/",  trendingPageRouter);
+app.use("/api/", trendingPageRouter);
 
 server.listen(port,() => {
     console.log(`server started on port ${port}`);
