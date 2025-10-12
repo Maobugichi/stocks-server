@@ -21,7 +21,7 @@ loginRouter.post("/",async (req,res) => {
        
         const user = result.rows[0]
         const dbPassword = user.password
-        const userId = user.id
+        const id = user.id
         const isPass = await bcrypt.compare(password,dbPassword);
         if (!isPass) {
           return res.status(401).json({ message: "invalid credentials" });
