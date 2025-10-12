@@ -36,11 +36,11 @@ export function checkAuth(req, res, next) {
         });
     }
     
-    // 4. Verify the token
+    
     try {
         const decoded = jwt.verify(token, jwtSecret);
         req.user = decoded;
-        console.log("✅ Token verified for user:", decoded.userId);
+       
         next();
     } catch(err) {
         console.error("❌ Token verification failed:", err.message);

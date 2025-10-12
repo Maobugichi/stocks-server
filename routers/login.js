@@ -27,7 +27,7 @@ loginRouter.post("/",async (req,res) => {
           return res.status(401).json({ message: "invalid credentials" });
         }
 
-        const token = jwt.sign({id: userId, username: user.username, email: user.email},jwtSecret,{ expiresIn:'7d'});
+        const token = jwt.sign({id, username: user.username, email: user.email},jwtSecret,{ expiresIn:'7d'});
 
         res.cookie("token", token, {
             httpOnly: true,
