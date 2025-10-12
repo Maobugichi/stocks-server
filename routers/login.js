@@ -36,7 +36,7 @@ loginRouter.post("/",async (req,res) => {
             maxAge: 7 * 24 * 60 * 60 * 1000,
             path: "/"
         });
-        res.status(200).json({username:user.username, userId , email , onboarded:user.onboarded})
+        res.status(200).json({user: { username:user.username, id , email , onboarded:user.onboarded } , token})
 
     } catch(err) {
         console.log(err)
