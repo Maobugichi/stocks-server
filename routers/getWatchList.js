@@ -4,8 +4,8 @@ import yahooFinance from "yahoo-finance2";
 
 const watchListRouter = Router();
 
-watchListRouter.get("/:userId", async (req,res) => {
-    const { userId } = req.params;
+watchListRouter.get("", async (req,res) => {
+    const userId = req.user.id;
     try {
     const result = await pool.query("SELECT symbol, company_name, fifty_two_week_high,fifty_two_week_low , pe_ration FROM watchlist WHERE user_id = $1",[userId]);
     const watchlist = result.rows;

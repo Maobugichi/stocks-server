@@ -61,7 +61,7 @@ app.use("/api/ticker/", tickerRouter);
 app.use("/api/save-port",savePortfolioRouter);
 app.use("/api/portfolio/",portfolioRouter);
 app.use("/api/watchlist/",addWatchlistRouter);
-app.use("/api/getList/",watchListRouter);
+app.use("/api/getList/", checkAuth , watchListRouter);
 app.use("/api/news/", newsRouter);
 app.use("/api/trending-news/",trendingRouter);
 app.use("/api/alerts", alertRouter);
@@ -69,7 +69,7 @@ app.use("/api/", sentimentRouter);
 app.use("/api/newsList" , finnRouter);
 app.use("/oauth", oauthRouter);
 app.use("/api/", onboardRouter);
-app.use("/api/", trendingPageRouter);
+app.use("/api/", checkAuth, trendingPageRouter);
 
 server.listen(port,() => {
     console.log(`server started on port ${port}`);
