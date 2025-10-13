@@ -22,6 +22,7 @@ import finnRouter from "./routers/finnNews.js";
 import oauthRouter from "./routers/oauth.js";
 import onboardRouter from "./routers/onboarding.js";
 import trendingPageRouter from "./routers/trending.js";
+import authRouter from "./routers/logout.js";
 
 
 dotenv.config();
@@ -55,6 +56,7 @@ app.use(
 
 app.use("/api/sign-up/",router);
 app.use("/api/login/",loginRouter);
+app.use("/api/logout",authRouter);
 app.use("/api/",checkAuth,dashRouter);
 app.use("/api/stocks/",stockrouter);
 app.use("/api/ticker/", tickerRouter);
