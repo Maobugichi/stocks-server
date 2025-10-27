@@ -4,7 +4,7 @@ import { Router } from "express";
 import NodeCache from "node-cache";
 
 const cache = new NodeCache({ 
-  stdTTL: 600, // 10 minutes default TTL (increased from 5)
+  stdTTL: 600, 
   checkperiod: 60, 
   useClones: false
 });
@@ -15,20 +15,54 @@ yahooFinance.setGlobalConfig({
 
 const trendingPageRouter = Router();
 
-// Utility function to add delay between requests
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Utility function for exponential backoff retry
-async function fetchWithRetry(fetchFn, maxRetries = 3) {
+// Rate limiter to control concurrent requests
+class RateLimiter {
+  constructor(maxConcurrent = 3, delayMs = 100) {
+    this.maxConcurrent = maxConcurrent;
+    this.delayMs = delayMs;
+    this.queue = [];
+    this.running = 0;
+  }
+
+  async execute(fn) {
+    while (this.running >= this.maxConcurrent) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    this.running++;
+    try {
+      const result = await fn();
+      await delay(this.delayMs);
+      return result;
+    } finally {
+      this.running--;
+    }
+  }
+}
+
+const rateLimiter = new RateLimiter(3, 100);
+
+// Utility function for exponential backoff retry with timeout
+async function fetchWithRetry(fetchFn, maxRetries = 3, timeoutMs = 10000) {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      return await fetchFn();
+      // Wrap fetch with timeout
+      const result = await Promise.race([
+        fetchFn(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Request timeout')), timeoutMs)
+        )
+      ]);
+      return result;
     } catch (err) {
       const is429 = err.message?.includes('429') || err.message?.includes('Too Many Requests');
+      const isTimeout = err.message?.includes('timeout');
       
-      if (is429 && attempt < maxRetries - 1) {
-        const backoffDelay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-        console.log(`⏳ Rate limited. Retrying in ${backoffDelay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+      if ((is429 || isTimeout) && attempt < maxRetries - 1) {
+        const backoffDelay = Math.pow(2, attempt) * 1000;
+        console.log(`⏳ ${isTimeout ? 'Timeout' : 'Rate limited'}. Retrying in ${backoffDelay}ms... (attempt ${attempt + 1}/${maxRetries})`);
         await delay(backoffDelay);
       } else {
         throw err;
@@ -37,7 +71,7 @@ async function fetchWithRetry(fetchFn, maxRetries = 3) {
   }
 }
 
-async function getTickersFromDB(limit = 25) {
+async function getTickersFromDB(limit = 20) {
   const cacheKey = `tickers_${limit}`;
   
   let cachedTickers = cache.get(cacheKey);
@@ -52,7 +86,6 @@ async function getTickersFromDB(limit = 25) {
   );
   const tickers = res.rows.map(r => r.symbol);
   
-  // Cache for 15 minutes
   cache.set(cacheKey, tickers, 900);
   console.log(`✓ Cached ${cacheKey}`);
   
@@ -69,26 +102,25 @@ async function fetchLiveData(symbols) {
   }
   
   const results = [];
-  const BATCH_SIZE = 10; // Fetch 10 symbols at a time
-  const DELAY_BETWEEN_BATCHES = 1200; // 1.2 seconds between batches
+  const BATCH_SIZE = 15;
   
   console.log(`📊 Fetching live data for ${symbols.length} symbols in batches of ${BATCH_SIZE}...`);
   
+  const batches = [];
   for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-    const batch = symbols.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(symbols.length / BATCH_SIZE);
-    
-    console.log(`📦 Processing batch ${batchNum}/${totalBatches}: ${batch.join(', ')}`);
-    
-    try {
-      await fetchWithRetry(async () => {
-        const quotes = await yahooFinance.quote(batch);
-        const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
-        
-        for (const quote of quotesArray) {
-          if (quote && quote.symbol && quote.regularMarketPrice) {
-            results.push({
+    batches.push(symbols.slice(i, i + BATCH_SIZE));
+  }
+  
+  const batchPromises = batches.map((batch, index) => 
+    rateLimiter.execute(async () => {
+      try {
+        return await fetchWithRetry(async () => {
+          const quotes = await yahooFinance.quote(batch);
+          const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
+          
+          const batchResults = quotesArray
+            .filter(quote => quote && quote.symbol && quote.regularMarketPrice)
+            .map(quote => ({
               symbol: quote.symbol,
               price: quote.regularMarketPrice ?? null,
               changePercent: quote.regularMarketChange ?? null,
@@ -97,80 +129,25 @@ async function fetchLiveData(symbols) {
               volume: quote.regularMarketVolume ?? null,
               currency: quote.currency ?? null,
               exchange: quote.fullExchangeName ?? null,
-            });
-          }
-        }
-        
-        console.log(`✅ Batch ${batchNum} successful (${quotesArray.length} quotes)`);
-      });
-    } catch (err) {
-      console.error(`❌ Failed for batch ${batchNum} [${batch.join(',')}]: ${err.message}`);
-    }
-    
-    // Add delay between batches (except for the last batch)
-    if (i + BATCH_SIZE < symbols.length) {
-      await delay(DELAY_BETWEEN_BATCHES);
-    }
-  }
+            }));
+          
+          console.log(`✅ Batch ${index + 1} successful (${batchResults.length} quotes)`);
+          return batchResults;
+        }, 3, 8000); // 8 second timeout per batch
+      } catch (err) {
+        console.error(`❌ Failed for batch ${index + 1}: ${err.message}`);
+        return [];
+      }
+    })
+  );
   
-  // Cache for 5 minutes
+  const batchResults = await Promise.all(batchPromises);
+  batchResults.forEach(batch => results.push(...batch));
+  
   cache.set(cacheKey, results, 300);
   console.log(`✓ Cached live data (${results.length} results)`);
   
   return results;
-}
-
-async function fetchNews(symbols) {
-  const cacheKey = `news_${symbols.sort().join('_')}`;
-  
-  let cachedNews = cache.get(cacheKey);
-  if (cachedNews) {
-    console.log(`✓ Cache hit for news`);
-    return cachedNews;
-  }
-  
-  const result = [];
-  const DELAY_BETWEEN_REQUESTS = 300; // 300ms delay between news requests
-  
-  console.log(`📰 Fetching news for ${symbols.length} symbols...`);
-
-  for (let i = 0; i < symbols.length; i++) {
-    const symbol = symbols[i];
-    
-    try {
-      await fetchWithRetry(async () => {
-        const news_data = await yahooFinance.search(symbol, { newsCount: 10 });
-
-        const validQuotes = (news_data.quotes || []).filter(
-          q => q.quoteType !== "MONEY_MARKET"
-        );
-
-        const news = (news_data.news || []).map(n => ({
-          title: n.title,
-          publisher: n.publisher,
-          link: n.link,
-          published: n.providerPublishTime * 1000,
-        }));
-
-        result.push({ symbol, validQuotes, news });
-      });
-      
-      console.log(`✅ News fetched for ${symbol}`);
-    } catch (err) {
-      console.error(`❌ Failed to fetch news for ${symbol}: ${err.message}`);
-    }
-    
-    // Add delay between requests (except for the last one)
-    if (i < symbols.length - 1) {
-      await delay(DELAY_BETWEEN_REQUESTS);
-    }
-  }
-
-  // Cache for 15 minutes since news doesn't change frequently
-  cache.set(cacheKey, result, 900);
-  console.log(`✓ Cached news data (${result.length} results)`);
-  
-  return result;
 }
 
 async function fetchScreenerData(screnerId, cacheDuration = 300) {
@@ -185,7 +162,7 @@ async function fetchScreenerData(screnerId, cacheDuration = 300) {
   try {
     const data = await fetchWithRetry(async () => {
       return await yahooFinance.screener({ scrIds: screnerId, count: 10 });
-    });
+    }, 3, 8000); // 8 second timeout
     
     const formatted = data.quotes.map(q => ({
       symbol: q.symbol,
@@ -218,15 +195,13 @@ async function fetchTrendingSymbols() {
   try {
     const trend = await fetchWithRetry(async () => {
       return await yahooFinance.trendingSymbols('US');
-    });
+    }, 3, 8000); // 8 second timeout
     
     const trendingSymbols = trend.quotes.map(q => q.symbol);
     console.log(`📈 Found ${trendingSymbols.length} trending symbols`);
     
-    // Fetch live data for trending symbols
     const trendingData = await fetchLiveData(trendingSymbols);
     
-    // Cache for 10 minutes
     cache.set(cacheKey, trendingData, 600);
     console.log(`✓ Cached trending quotes`);
     
@@ -237,46 +212,100 @@ async function fetchTrendingSymbols() {
   }
 }
 
+// Background revalidation function
+async function revalidateCache(cacheKey, fetchFunction) {
+  console.log(`🔄 Background revalidation started for ${cacheKey}`);
+  try {
+    const freshData = await fetchFunction();
+    cache.set(cacheKey, freshData, 300);
+    console.log(`✅ Background revalidation complete for ${cacheKey}`);
+  } catch (err) {
+    console.error(`❌ Background revalidation failed for ${cacheKey}:`, err.message);
+  }
+}
+
 trendingPageRouter.get("/trending-stock", async (req, res) => {
   try {
     const cacheKey = 'trending_stock_full';
     
     let cachedResponse = cache.get(cacheKey);
+    
+    // Stale-while-revalidate: Return cached data immediately if available
     if (cachedResponse) {
-      console.log('✓ Cache hit for full trending stock response');
+      console.log('✓ Cache hit for full trending stock response (stale-while-revalidate)');
+      
+      // Check if cache is older than 2 minutes - trigger background refresh
+      const ttl = cache.getTtl(cacheKey);
+      const now = Date.now();
+      const age = now - (ttl - 300000); // 300000ms = 5min cache duration
+      
+      if (age > 120000) { // 2 minutes old
+        console.log('🔄 Cache is stale, triggering background revalidation');
+        
+        // Fire and forget - don't await
+        revalidateCache(cacheKey, async () => {
+          const tickers = await getTickersFromDB(20);
+          
+          const [liveData, gainers, losers, active, isTrendingQuote] = await Promise.all([
+            fetchLiveData(tickers),
+            fetchScreenerData('day_gainers', 300),
+            fetchScreenerData('day_losers', 300),
+            fetchScreenerData('most_actives', 300),
+            fetchTrendingSymbols()
+          ]);
+          
+          return {
+            liveData,
+            gainers,
+            losers,
+            active,
+            isTrendingQuote
+          };
+        }).catch(err => console.error('Background revalidation error:', err));
+      }
+      
       return res.json(cachedResponse);
     }
     
-    console.log('🚀 Starting trending stock data fetch...');
+    console.log('🚀 Starting trending stock data fetch (cache miss)...');
     
-    // Fetch tickers from DB (reduced from 50 to 25)
-    const tickers = await getTickersFromDB(25);
+    const tickers = await getTickersFromDB(20);
     console.log(`📋 Retrieved ${tickers.length} tickers from DB`);
-    
-    // Fetch all data with delays built in
+   
+    // Fetch everything in parallel with individual timeouts
     const [liveData, gainers, losers, active, isTrendingQuote] = await Promise.all([
-      fetchLiveData(tickers),
-      fetchScreenerData('day_gainers', 300),
-      fetchScreenerData('day_losers', 300),
-      fetchScreenerData('most_actives', 300),
-      fetchTrendingSymbols()
+      fetchLiveData(tickers).catch(err => {
+        console.error('❌ Live data fetch failed:', err.message);
+        return [];
+      }),
+      fetchScreenerData('day_gainers', 300).catch(err => {
+        console.error('❌ Gainers fetch failed:', err.message);
+        return [];
+      }),
+      fetchScreenerData('day_losers', 300).catch(err => {
+        console.error('❌ Losers fetch failed:', err.message);
+        return [];
+      }),
+      fetchScreenerData('most_actives', 300).catch(err => {
+        console.error('❌ Most actives fetch failed:', err.message);
+        return [];
+      }),
+      fetchTrendingSymbols().catch(err => {
+        console.error('❌ Trending symbols fetch failed:', err.message);
+        return [];
+      })
     ]);
-    
-    // Add delay before fetching news to spread out requests
-    await delay(500);
-    const news = await fetchNews(tickers);
     
     const responseData = {
       liveData,
       gainers,
       losers,
       active,
-      isTrendingQuote,
-      news
+      isTrendingQuote
     };
     
-    // Cache full response for 3 minutes
-    cache.set(cacheKey, responseData, 180);
+    // Cache full response for 5 minutes
+    cache.set(cacheKey, responseData, 300);
     console.log('✅ Trending stock data fetch complete!');
     
     res.json(responseData);
@@ -307,15 +336,23 @@ trendingPageRouter.get('/trending-search', async (req, res) => {
     
     const quote = await fetchWithRetry(async () => {
       return await yahooFinance.quote(ticker);
-    });
+    }, 3, 8000); // 8 second timeout
     
-    // Cache for 5 minutes
     cache.set(cacheKey, quote, 300);
     console.log(`✓ Cached search result: ${ticker}`);
     
     res.json(quote);
   } catch (err) {
     console.error(`❌ Error searching for ticker:`, err);
+    
+    // Better error handling for timeouts
+    if (err.message?.includes('timeout')) {
+      return res.status(504).json({ 
+        error: 'Request timeout',
+        message: 'The search request took too long to complete. Please try again.'
+      });
+    }
+    
     res.status(500).json({ 
       error: 'Failed to fetch quote',
       message: err.message 
@@ -350,7 +387,6 @@ trendingPageRouter.delete('/cache', (req, res) => {
   });
 });
 
-// Optional: Clear specific cache entry
 trendingPageRouter.delete('/cache/:key', (req, res) => {
   const { key } = req.params;
   const deleted = cache.del(key);
