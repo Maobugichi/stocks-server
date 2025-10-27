@@ -115,11 +115,22 @@ async function fetchLiveData(symbols) {
     rateLimiter.execute(async () => {
       try {
         return await fetchWithRetry(async () => {
-          const quotes = await yahooFinance.quote(batch);
+          const quotes = await yahooFinance.quote(batch, {
+            fields: ['symbol', 'regularMarketPrice', 'regularMarketChange', 
+                     'regularMarketChangePercent', 'marketCap', 'regularMarketVolume',
+                     'currency', 'fullExchangeName']
+          }, { validation: { logErrors: false } });
+          
           const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
           
           const batchResults = quotesArray
-            .filter(quote => quote && quote.symbol && quote.regularMarketPrice)
+            .filter(quote => {
+              // More robust validation
+              if (!quote || typeof quote !== 'object') return false;
+              if (!quote.symbol) return false;
+              if (typeof quote.regularMarketPrice !== 'number' || quote.regularMarketPrice <= 0) return false;
+              return true;
+            })
             .map(quote => ({
               symbol: quote.symbol,
               price: quote.regularMarketPrice ?? null,
@@ -127,16 +138,42 @@ async function fetchLiveData(symbols) {
               regularMarketChangePercent: quote.regularMarketChangePercent ?? null,
               marketCap: quote.marketCap ?? null,
               volume: quote.regularMarketVolume ?? null,
-              currency: quote.currency ?? null,
+              currency: quote.currency ?? 'USD',
               exchange: quote.fullExchangeName ?? null,
             }));
           
-          console.log(`✅ Batch ${index + 1} successful (${batchResults.length} quotes)`);
+          console.log(`✅ Batch ${index + 1} successful (${batchResults.length}/${batch.length} valid quotes)`);
           return batchResults;
         }, 3, 8000); // 8 second timeout per batch
       } catch (err) {
-        console.error(`❌ Failed for batch ${index + 1}: ${err.message}`);
-        return [];
+        console.error(`❌ Failed for batch ${index + 1} [${batch.join(',')}]: ${err.message}`);
+        
+        // Try individual fallback for failed batch
+        console.log(`🔄 Attempting individual fetch for batch ${index + 1}...`);
+        const individualResults = [];
+        
+        for (const symbol of batch) {
+          try {
+            const quote = await yahooFinance.quote(symbol, {}, { validation: { logErrors: false } });
+            if (quote && quote.symbol && quote.regularMarketPrice) {
+              individualResults.push({
+                symbol: quote.symbol,
+                price: quote.regularMarketPrice ?? null,
+                changePercent: quote.regularMarketChange ?? null,
+                regularMarketChangePercent: quote.regularMarketChangePercent ?? null,
+                marketCap: quote.marketCap ?? null,
+                volume: quote.regularMarketVolume ?? null,
+                currency: quote.currency ?? 'USD',
+                exchange: quote.fullExchangeName ?? null,
+              });
+            }
+          } catch (symbolErr) {
+            console.error(`❌ Failed individual fetch for ${symbol}: ${symbolErr.message}`);
+          }
+        }
+        
+        console.log(`✅ Individual fallback recovered ${individualResults.length}/${batch.length} quotes`);
+        return individualResults;
       }
     })
   );
@@ -145,7 +182,7 @@ async function fetchLiveData(symbols) {
   batchResults.forEach(batch => results.push(...batch));
   
   cache.set(cacheKey, results, 300);
-  console.log(`✓ Cached live data (${results.length} results)`);
+  console.log(`✓ Cached live data (${results.length}/${symbols.length} successful results)`);
   
   return results;
 }
