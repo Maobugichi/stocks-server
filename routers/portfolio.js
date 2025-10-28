@@ -24,14 +24,14 @@ function setCache(key, data) {
   cache.set(key, { data, timestamp: Date.now() });
 }
 
-// NEW: Clear cache for specific user
+// Clear cache for specific user
 function clearUserCache(userId) {
   const cacheKey = getCacheKey(userId, "portfolio");
   cache.delete(cacheKey);
   console.log(`🗑️ Cleared cache for user ${userId}`);
 }
 
-// NEW: Clear all cache
+// Clear all cache
 function clearAllCache() {
   const size = cache.size;
   cache.clear();
@@ -80,9 +80,10 @@ async function fetchHistorySafely(symbols, period1, period2) {
   return results;
 }
 
+// GET portfolio data
 portfolioRouter.get("/:userId", async (req, res) => {
   const { userId } = req.params;
-  const { skipCache } = req.query; // NEW: Allow bypassing cache
+  const { skipCache } = req.query;
   
   try {
     // Check cache first (unless skipCache is true)
@@ -99,7 +100,7 @@ portfolioRouter.get("/:userId", async (req, res) => {
 
     // Fetch holdings from database
     const result = await pool.query(
-      "SELECT symbol, shares, buy_price FROM portfolio WHERE user_id = $1 ORDER BY symbol",
+      "SELECT id, symbol, shares, buy_price FROM portfolio WHERE user_id = $1 ORDER BY symbol",
       [userId]
     );
 
@@ -288,6 +289,7 @@ portfolioRouter.get("/:userId", async (req, res) => {
     const breakdown = holdings.map((h) => {
       const quote = quoteMap.get(h.symbol);
       return {
+        id: h.id, // Include ID for delete/update operations
         symbol: h.symbol,
         shares: h.shares,
         buyPrice: h.buy_price,
@@ -344,29 +346,205 @@ portfolioRouter.get("/:userId", async (req, res) => {
   }
 });
 
-
+// POST - Add new holding
 portfolioRouter.post("/save-port/:userId", async (req, res) => {
   const { userId } = req.params;
   const { ticker, shares, buyPrice } = req.body;
 
   try {
-    // Your existing save logic here
-    await pool.query(
-      "INSERT INTO portfolio (user_id, symbol, shares, buy_price) VALUES ($1, $2, $3, $4)",
-      [userId, ticker, shares, buyPrice]
+    // Validate input
+    if (!ticker || !shares || !buyPrice) {
+      return res.status(400).json({ 
+        error: "Missing required fields",
+        message: "ticker, shares, and buyPrice are required" 
+      });
+    }
+
+    // Validate numeric values
+    if (isNaN(shares) || isNaN(buyPrice) || Number(shares) <= 0 || Number(buyPrice) <= 0) {
+      return res.status(400).json({ 
+        error: "Invalid values",
+        message: "shares and buyPrice must be positive numbers" 
+      });
+    }
+
+    // Insert new holding
+    const result = await pool.query(
+      "INSERT INTO portfolio (user_id, symbol, shares, buy_price) VALUES ($1, $2, $3, $4) RETURNING id, symbol, shares, buy_price",
+      [userId, ticker.toUpperCase(), shares, buyPrice]
     );
 
     // Clear cache immediately after update
     clearUserCache(userId);
 
-    res.json({ success: true, message: "Portfolio updated and cache cleared" });
+    console.log(`✅ Added holding ${ticker} for user ${userId}`);
+
+    res.json({ 
+      success: true, 
+      message: "Holding added successfully",
+      holding: result.rows[0]
+    });
   } catch (err) {
     console.error("Error saving portfolio:", err);
-    res.status(500).json({ error: "Failed to save portfolio" });
+    
+    // Handle duplicate entry
+    if (err.code === '23505') {
+      return res.status(409).json({ 
+        error: "Duplicate holding",
+        message: `${ticker} already exists in your portfolio` 
+      });
+    }
+    
+    res.status(500).json({ 
+      error: "Failed to save portfolio",
+      message: err.message 
+    });
   }
 });
 
+// DELETE - Remove holding by ID
+portfolioRouter.delete("/:userId/holdings/:holdingId", async (req, res) => {
+  const { userId, holdingId } = req.params;
 
+  try {
+    // Validate holdingId is a number
+    if (isNaN(holdingId)) {
+      return res.status(400).json({ 
+        error: "Invalid holding ID",
+        message: "Holding ID must be a number" 
+      });
+    }
+
+    // Delete the holding (ensure it belongs to this user)
+    const result = await pool.query(
+      "DELETE FROM portfolio WHERE id = $1 AND user_id = $2 RETURNING symbol",
+      [holdingId, userId]
+    );
+
+    // Check if holding was found and deleted
+    if (result.rowCount === 0) {
+      return res.status(404).json({ 
+        error: "Holding not found",
+        message: "The specified holding does not exist or does not belong to this user" 
+      });
+    }
+
+    // Clear cache immediately after deletion
+    clearUserCache(userId);
+
+    const deletedSymbol = result.rows[0].symbol;
+    console.log(`🗑️ Deleted holding ${deletedSymbol} (ID: ${holdingId}) for user ${userId}`);
+
+    res.json({ 
+      success: true, 
+      message: "Holding deleted successfully",
+      deletedSymbol 
+    });
+  } catch (err) {
+    console.error("Error deleting holding:", err);
+    res.status(500).json({ 
+      error: "Failed to delete holding",
+      message: err.message 
+    });
+  }
+});
+
+// PATCH - Update existing holding
+portfolioRouter.patch("/:userId/holdings/:holdingId", async (req, res) => {
+  const { userId, holdingId } = req.params;
+  const { ticker, shares, buyPrice } = req.body;
+
+  try {
+    // Validate holdingId
+    if (isNaN(holdingId)) {
+      return res.status(400).json({ 
+        error: "Invalid holding ID",
+        message: "Holding ID must be a number" 
+      });
+    }
+
+    // Build dynamic update query
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (ticker !== undefined) {
+      updates.push(`symbol = $${paramCount++}`);
+      values.push(ticker.toUpperCase());
+    }
+    if (shares !== undefined) {
+      if (isNaN(shares) || Number(shares) <= 0) {
+        return res.status(400).json({ 
+          error: "Invalid shares value",
+          message: "shares must be a positive number" 
+        });
+      }
+      updates.push(`shares = $${paramCount++}`);
+      values.push(shares);
+    }
+    if (buyPrice !== undefined) {
+      if (isNaN(buyPrice) || Number(buyPrice) <= 0) {
+        return res.status(400).json({ 
+          error: "Invalid buyPrice value",
+          message: "buyPrice must be a positive number" 
+        });
+      }
+      updates.push(`buy_price = $${paramCount++}`);
+      values.push(buyPrice);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ 
+        error: "No updates provided",
+        message: "At least one field (ticker, shares, buyPrice) must be provided" 
+      });
+    }
+
+    // Add WHERE clause parameters
+    values.push(holdingId, userId);
+
+    // Execute update
+    const result = await pool.query(
+      `UPDATE portfolio SET ${updates.join(', ')} WHERE id = $${paramCount++} AND user_id = $${paramCount} RETURNING id, symbol, shares, buy_price`,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ 
+        error: "Holding not found",
+        message: "The specified holding does not exist or does not belong to this user" 
+      });
+    }
+
+    // Clear cache immediately after update
+    clearUserCache(userId);
+
+    console.log(`✏️ Updated holding ${result.rows[0].symbol} (ID: ${holdingId}) for user ${userId}`);
+
+    res.json({ 
+      success: true, 
+      message: "Holding updated successfully",
+      holding: result.rows[0]
+    });
+  } catch (err) {
+    console.error("Error updating holding:", err);
+    
+    // Handle duplicate entry
+    if (err.code === '23505') {
+      return res.status(409).json({ 
+        error: "Duplicate holding",
+        message: "A holding with this symbol already exists in your portfolio" 
+      });
+    }
+    
+    res.status(500).json({ 
+      error: "Failed to update holding",
+      message: err.message 
+    });
+  }
+});
+
+// DELETE - Clear user cache
 portfolioRouter.delete("/:userId/cache", (req, res) => {
   const { userId } = req.params;
   clearUserCache(userId);
@@ -376,7 +554,7 @@ portfolioRouter.delete("/:userId/cache", (req, res) => {
   });
 });
 
-// NEW: Clear all cache (admin endpoint - add auth!)
+// DELETE - Clear all cache (admin endpoint - add auth!)
 portfolioRouter.delete("/cache/all", (req, res) => {
   clearAllCache();
   res.json({ 
@@ -385,7 +563,7 @@ portfolioRouter.delete("/cache/all", (req, res) => {
   });
 });
 
-// Health check endpoint
+// GET - Health check endpoint
 portfolioRouter.get("/:userId/health", async (req, res) => {
   res.json({ 
     status: "ok",
