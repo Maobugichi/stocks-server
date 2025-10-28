@@ -4,9 +4,8 @@ import yahooFinance from "yahoo-finance2";
 
 const portfolioRouter = Router();
 
-// Simple in-memory cache (consider Redis for production)
 const cache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 2 * 60 * 1000; 
 
 function getCacheKey(userId, type) {
   return `${userId}:${type}`;
@@ -25,10 +24,24 @@ function setCache(key, data) {
   cache.set(key, { data, timestamp: Date.now() });
 }
 
+// NEW: Clear cache for specific user
+function clearUserCache(userId) {
+  const cacheKey = getCacheKey(userId, "portfolio");
+  cache.delete(cacheKey);
+  console.log(`🗑️ Cleared cache for user ${userId}`);
+}
+
+// NEW: Clear all cache
+function clearAllCache() {
+  const size = cache.size;
+  cache.clear();
+  console.log(`🗑️ Cleared all cache (${size} entries)`);
+}
+
 // Batch fetch with error handling for individual symbols
 async function fetchQuotesSafely(symbols) {
   const results = [];
-  const batchSize = 10; // Yahoo Finance may have limits
+  const batchSize = 10;
   
   for (let i = 0; i < symbols.length; i += batchSize) {
     const batch = symbols.slice(i, i + batchSize);
@@ -38,7 +51,6 @@ async function fetchQuotesSafely(symbols) {
       results.push(...quotesArray);
     } catch (err) {
       console.error(`Error fetching batch ${i}-${i + batchSize}:`, err.message);
-      // Add placeholder for failed quotes
       batch.forEach(symbol => {
         results.push({ symbol, error: true });
       });
@@ -70,14 +82,20 @@ async function fetchHistorySafely(symbols, period1, period2) {
 
 portfolioRouter.get("/:userId", async (req, res) => {
   const { userId } = req.params;
+  const { skipCache } = req.query; // NEW: Allow bypassing cache
   
   try {
-    // Check cache first
-    const cacheKey = getCacheKey(userId, "portfolio");
-    const cachedData = getFromCache(cacheKey);
-    if (cachedData) {
-      return res.json({ ...cachedData, cached: true });
+    // Check cache first (unless skipCache is true)
+    if (!skipCache) {
+      const cacheKey = getCacheKey(userId, "portfolio");
+      const cachedData = getFromCache(cacheKey);
+      if (cachedData) {
+        console.log(`✓ Cache hit for user ${userId}`);
+        return res.json({ ...cachedData, cached: true });
+      }
     }
+
+    console.log(`📊 Fetching fresh portfolio data for user ${userId}`);
 
     // Fetch holdings from database
     const result = await pool.query(
@@ -91,7 +109,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
       return res.json({ message: "No holdings available" });
     }
 
-    // Limit portfolio size for performance
     if (holdings.length > 100) {
       return res.status(400).json({ 
         error: "Portfolio too large",
@@ -101,7 +118,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
 
     const symbols = holdings.map((h) => h.symbol);
 
-    // Fetch quotes in batches
     const quotesArray = await fetchQuotesSafely(symbols);
     const quoteMap = new Map(
       quotesArray
@@ -109,14 +125,12 @@ portfolioRouter.get("/:userId", async (req, res) => {
         .map(q => [q.symbol, q])
     );
 
-    // Only fetch history for valid quotes
     const validSymbols = symbols.filter(s => quoteMap.has(s));
     
     const now = new Date();
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(now.getMonth() - 1);
 
-    // Fetch historical data with error handling
     const historyResults = await fetchHistorySafely(validSymbols, oneMonthAgo, now);
     const historyMap = new Map(
       historyResults
@@ -124,7 +138,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
         .map(h => [h.symbol, h.data])
     );
 
-    // Calculate current portfolio metrics
     let portfolioValue = 0;
     let investedAmount = 0;
     let yesterdayPortfolioValue = 0;
@@ -164,7 +177,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
       }
     });
 
-    // Calculate performance metrics
     const profitLoss = portfolioValue - investedAmount;
     const percentGainLoss =
       investedAmount > 0 ? (profitLoss / investedAmount) * 100 : 0;
@@ -179,7 +191,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
     const averageDividendYield =
       countDividend > 0 ? totalDividendYield / countDividend : null;
 
-    // Calculate historical data - only for holdings with valid history
     const historiesAvailable = Array.from(historyMap.values());
     
     let dates = [];
@@ -202,7 +213,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
             const price = history.quotes[i].close;
             totalValueAtPoint += shares * price;
           } else {
-            // Use current price as fallback for missing historical data
             const quote = quoteMap.get(holding.symbol);
             const currentPrice = quote?.regularMarketPrice || 0;
             totalValueAtPoint += shares * currentPrice;
@@ -219,7 +229,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
       }
     }
 
-    // Calculate daily percentage changes
     const dailyHistory = [];
     const dailyDates = [];
 
@@ -234,7 +243,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
       dailyDates.push(dates[i]);
     }
 
-    // Calculate 52-week range
     const low52 = holdings.reduce((sum, h) => {
       const quote = quoteMap.get(h.symbol);
       if (!quote) return sum;
@@ -251,7 +259,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
       return sum + shares * high;
     }, 0);
 
-    // Calculate individual stock performance
     const stockPerformance = holdings
       .map((h) => {
         const quote = quoteMap.get(h.symbol);
@@ -278,7 +285,6 @@ portfolioRouter.get("/:userId", async (req, res) => {
       ? stockPerformance.reduce((a, b) => (b.pct < a.pct ? b : a))
       : null;
 
-    // Build detailed breakdown
     const breakdown = holdings.map((h) => {
       const quote = quoteMap.get(h.symbol);
       return {
@@ -324,7 +330,9 @@ portfolioRouter.get("/:userId", async (req, res) => {
     };
 
     // Cache the response
+    const cacheKey = getCacheKey(userId, "portfolio");
     setCache(cacheKey, response);
+    console.log(`✓ Cached portfolio data for user ${userId}`);
 
     res.json(response);
   } catch (err) {
@@ -336,11 +344,53 @@ portfolioRouter.get("/:userId", async (req, res) => {
   }
 });
 
+
+portfolioRouter.post("/save-port/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const { ticker, shares, buyPrice } = req.body;
+
+  try {
+    // Your existing save logic here
+    await pool.query(
+      "INSERT INTO portfolio (user_id, symbol, shares, buy_price) VALUES ($1, $2, $3, $4)",
+      [userId, ticker, shares, buyPrice]
+    );
+
+    // Clear cache immediately after update
+    clearUserCache(userId);
+
+    res.json({ success: true, message: "Portfolio updated and cache cleared" });
+  } catch (err) {
+    console.error("Error saving portfolio:", err);
+    res.status(500).json({ error: "Failed to save portfolio" });
+  }
+});
+
+
+portfolioRouter.delete("/:userId/cache", (req, res) => {
+  const { userId } = req.params;
+  clearUserCache(userId);
+  res.json({ 
+    success: true, 
+    message: `Cache cleared for user ${userId}` 
+  });
+});
+
+// NEW: Clear all cache (admin endpoint - add auth!)
+portfolioRouter.delete("/cache/all", (req, res) => {
+  clearAllCache();
+  res.json({ 
+    success: true, 
+    message: "All cache cleared" 
+  });
+});
+
 // Health check endpoint
 portfolioRouter.get("/:userId/health", async (req, res) => {
   res.json({ 
     status: "ok",
     cacheSize: cache.size,
+    cacheTTL: `${CACHE_TTL / 1000} seconds`,
     timestamp: new Date().toISOString()
   });
 });
