@@ -267,19 +267,19 @@ trendingPageRouter.get("/trending-stock", async (req, res) => {
     
     let cachedResponse = cache.get(cacheKey);
     
-    // Stale-while-revalidate: Return cached data immediately if available
+   
     if (cachedResponse) {
       console.log('✓ Cache hit for full trending stock response (stale-while-revalidate)');
       
-      // Check if cache is older than 2 minutes - trigger background refresh
+    
       const ttl = cache.getTtl(cacheKey);
       const now = Date.now();
-      const age = now - (ttl - 300000); // 300000ms = 5min cache duration
+      const age = now - (ttl - 300000);
       
-      if (age > 120000) { // 2 minutes old
+      if (age > 120000) { 
         console.log('🔄 Cache is stale, triggering background revalidation');
         
-        // Fire and forget - don't await
+        
         revalidateCache(cacheKey, async () => {
           const tickers = await getTickersFromDB(20);
           

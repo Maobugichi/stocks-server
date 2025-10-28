@@ -4,155 +4,345 @@ import yahooFinance from "yahoo-finance2";
 
 const portfolioRouter = Router();
 
-portfolioRouter.get("/:userId", async (req,res) => {
-    const { userId } = req.params;
-    console.log("hello")
+// Simple in-memory cache (consider Redis for production)
+const cache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getCacheKey(userId, type) {
+  return `${userId}:${type}`;
+}
+
+function getFromCache(key) {
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.data;
+  }
+  cache.delete(key);
+  return null;
+}
+
+function setCache(key, data) {
+  cache.set(key, { data, timestamp: Date.now() });
+}
+
+// Batch fetch with error handling for individual symbols
+async function fetchQuotesSafely(symbols) {
+  const results = [];
+  const batchSize = 10; // Yahoo Finance may have limits
+  
+  for (let i = 0; i < symbols.length; i += batchSize) {
+    const batch = symbols.slice(i, i + batchSize);
     try {
-        const result = await pool.query("SELECT symbol, shares, buy_price FROM portfolio WHERE user_id = $1",[userId]);
+      const quotes = await yahooFinance.quote(batch);
+      const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
+      results.push(...quotesArray);
+    } catch (err) {
+      console.error(`Error fetching batch ${i}-${i + batchSize}:`, err.message);
+      // Add placeholder for failed quotes
+      batch.forEach(symbol => {
+        results.push({ symbol, error: true });
+      });
+    }
+  }
+  
+  return results;
+}
 
-        const holdings = result.rows;
+async function fetchHistorySafely(symbols, period1, period2) {
+  const results = [];
+  
+  for (const symbol of symbols) {
+    try {
+      const history = await yahooFinance.chart(symbol, {
+        period1,
+        period2,
+        interval: "1d",
+      });
+      results.push({ symbol, data: history });
+    } catch (err) {
+      console.error(`Error fetching history for ${symbol}:`, err.message);
+      results.push({ symbol, data: null, error: true });
+    }
+  }
+  
+  return results;
+}
 
-        if (holdings.length === 0) {
-            return res.json({message: 'No holdings available'})
-        }
+portfolioRouter.get("/:userId", async (req, res) => {
+  const { userId } = req.params;
+  
+  try {
+    // Check cache first
+    const cacheKey = getCacheKey(userId, "portfolio");
+    const cachedData = getFromCache(cacheKey);
+    if (cachedData) {
+      return res.json({ ...cachedData, cached: true });
+    }
 
-        const symbols = holdings.map((h) => h.symbol);
+    // Fetch holdings from database
+    const result = await pool.query(
+      "SELECT symbol, shares, buy_price FROM portfolio WHERE user_id = $1 ORDER BY symbol",
+      [userId]
+    );
 
-        const now = new Date();
-        const oneMonthAgo = new Date();
-        oneMonthAgo.setMonth(now.getMonth() - 1);
-        const quotes = await yahooFinance.quote(symbols);
-        const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
-        const historyPromises = symbols.map((s) =>
-          yahooFinance.chart(s, { 
-            period1: oneMonthAgo,
-            period2: now,
-            interval: "1d" })
-        );
-        const historyResults = await Promise.all(historyPromises);
+    const holdings = result.rows;
 
-        let portfolioValue = 0;
-        let investedAmount = 0;
-        let dailyChange = 0;
-        let totalMarketCap = 0;
-        let totalDividendYield = 0;
-        let totalPE = 0;
-        let countPE = 0;
+    if (holdings.length === 0) {
+      return res.json({ message: "No holdings available" });
+    }
+
+    // Limit portfolio size for performance
+    if (holdings.length > 100) {
+      return res.status(400).json({ 
+        error: "Portfolio too large",
+        message: "Maximum 100 holdings supported" 
+      });
+    }
+
+    const symbols = holdings.map((h) => h.symbol);
+
+    // Fetch quotes in batches
+    const quotesArray = await fetchQuotesSafely(symbols);
+    const quoteMap = new Map(
+      quotesArray
+        .filter(q => !q.error)
+        .map(q => [q.symbol, q])
+    );
+
+    // Only fetch history for valid quotes
+    const validSymbols = symbols.filter(s => quoteMap.has(s));
+    
+    const now = new Date();
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(now.getMonth() - 1);
+
+    // Fetch historical data with error handling
+    const historyResults = await fetchHistorySafely(validSymbols, oneMonthAgo, now);
+    const historyMap = new Map(
+      historyResults
+        .filter(h => !h.error && h.data?.quotes?.length > 0)
+        .map(h => [h.symbol, h.data])
+    );
+
+    // Calculate current portfolio metrics
+    let portfolioValue = 0;
+    let investedAmount = 0;
+    let yesterdayPortfolioValue = 0;
+    let totalMarketCap = 0;
+    let totalDividendYield = 0;
+    let totalPE = 0;
+    let countPE = 0;
+    let countDividend = 0;
+    let invalidHoldings = 0;
+
+    holdings.forEach((holding) => {
+      const quote = quoteMap.get(holding.symbol);
+      if (!quote) {
+        invalidHoldings++;
+        return;
+      }
+
+      const shares = Number(holding.shares);
+      const buyPrice = Number(holding.buy_price);
+      const currentPrice = quote.regularMarketPrice || 0;
+      const prevClose = quote.regularMarketPreviousClose || currentPrice;
+
+      portfolioValue += currentPrice * shares;
+      investedAmount += buyPrice * shares;
+      yesterdayPortfolioValue += prevClose * shares;
+
+      if (quote.marketCap) totalMarketCap += quote.marketCap;
+      
+      if (quote.dividendYield) {
+        totalDividendYield += quote.dividendYield;
+        countDividend++;
+      }
+
+      if (quote.trailingPE && quote.trailingPE > 0) {
+        totalPE += quote.trailingPE;
+        countPE++;
+      }
+    });
+
+    // Calculate performance metrics
+    const profitLoss = portfolioValue - investedAmount;
+    const percentGainLoss =
+      investedAmount > 0 ? (profitLoss / investedAmount) * 100 : 0;
+    
+    const dailyChange = portfolioValue - yesterdayPortfolioValue;
+    const dailyChangePercent =
+      yesterdayPortfolioValue > 0
+        ? (dailyChange / yesterdayPortfolioValue) * 100
+        : 0;
+
+    const avgPE = countPE > 0 ? totalPE / countPE : null;
+    const averageDividendYield =
+      countDividend > 0 ? totalDividendYield / countDividend : null;
+
+    // Calculate historical data - only for holdings with valid history
+    const historiesAvailable = Array.from(historyMap.values());
+    
+    let dates = [];
+    let profitLossHistory = [];
+    let portfolioValueHistory = [];
+
+    if (historiesAvailable.length > 0) {
+      const numPoints = Math.min(
+        ...historiesAvailable.map((h) => h.quotes?.length || 0)
+      );
+
+      for (let i = 0; i < numPoints; i++) {
+        let totalValueAtPoint = 0;
 
         holdings.forEach((holding) => {
-            const quote = quotesArray.find((q) => q.symbol == holding.symbol);
-            if (!quote) return;
-            const currentPrice = quote.regularMarketPrice || 0;
-            const prevClose = quote.regularMarketPreviousClose || 0;
-
-            const shares = Number(holding.shares);
-            const buyPrice = Number(holding.buy_price);
-            if (quote.marketCap) totalMarketCap += quote.marketCap;
-            if (quote.dividendYield) totalDividendYield += quote.dividendYield;
-
-            if (quote.trailingPE) {
-                totalPE += quote.trailingPE
-                countPE++
-            }
-
-           
-            portfolioValue += currentPrice * shares;
-            investedAmount += buyPrice * shares;
-            dailyChange += (currentPrice - prevClose) * shares;
-        })
-        const avgPE = countPE > 0 ? totalPE / countPE : null;
-        const averageDividendYield = holdings.length > 0 ? totalDividendYield / holdings.length : null
-        const profitLoss = portfolioValue - investedAmount;
-        const percentGainLoss = investedAmount > 0 ? (profitLoss / investedAmount) * 100 : 0;
-        const dailyChangePercent = portfolioValue > 0 ? (dailyChange / portfolioValue) * 100 : 0;
-
-        const numPoints = Math.min(...historyResults.map((h) => h.quotes.length))
- 
-        const dates = historyResults[0].quotes
-         .slice(0, numPoints)
-         .map((q) => q.date.toISOString().split("T")[0]); 
-        const profitLossHistory = [];
-         for (let i = 0; i < numPoints; i++) {
-            let totalValueAtPoint = 0;
-
-            holdings.forEach((holding,index) => {
-                const shares = Number(holding.shares);
-                const price = historyResults[index].quotes[i]?.close || 0;
-                totalValueAtPoint += shares * price
-            })
-            profitLossHistory.push(totalValueAtPoint - investedAmount)
-         }
-         const dailyHistory = [];
-         const dailyDates = []
-
-        for (let i = 1; i < numPoints; i++) {
-            let prevValue = 0;
-            let currValue = 0;
-
-            holdings.forEach((holding,idx) => {
-                const shares = Number(holding.shares);
-                const prev = historyResults[idx].quotes[i - 1]?.close || 0;
-                const curr = historyResults[idx].quotes[i]?.close || 0;
-
-                prevValue += shares * prev;
-                currValue += shares * curr
-            })
-            const pctChange = prevValue > 0 ? ((currValue - prevValue) / prevValue) * 100 : 0;
-            dailyHistory.push(pctChange)
-            dailyDates.push(dates[i])
-        }
-        const low52 = holdings.reduce((sum, h, i) => 
-            sum + (Number(h.shares) * (quotesArray[i].fiftyTwoWeekLow || 0)), 0);
-
-        const high52 = holdings.reduce((sum, h, i) => 
-            sum + (Number(h.shares) * (quotesArray[i].fiftyTwoWeekHigh || 0)), 0);
-
-        const stockPerformance = holdings.map((h) => {
-            const q = quotesArray.find((qq) => qq.symbol === h.symbol);
-            const currentPrice = q?.regularMarketPrice || 0;
-            const gainLoss = (currentPrice - Number(h.buy_price)) * Number(h.shares);
-            const pct = h.buy_price > 0 ? (gainLoss / (h.buy_price * h.shares)) * 100 : 0;
-            return { symbol:h.symbol , gainLoss , pct}
+          const shares = Number(holding.shares);
+          const history = historyMap.get(holding.symbol);
+          
+          if (history?.quotes[i]?.close) {
+            const price = history.quotes[i].close;
+            totalValueAtPoint += shares * price;
+          } else {
+            // Use current price as fallback for missing historical data
+            const quote = quoteMap.get(holding.symbol);
+            const currentPrice = quote?.regularMarketPrice || 0;
+            totalValueAtPoint += shares * currentPrice;
+          }
         });
-        const topStock = stockPerformance.reduce((a,b) => b.pct > a.pct ? b : a);
-        const worstStock = stockPerformance.reduce((a,b) => (b.pct < a.pct ? b : a));
+
+        const dateValue = historiesAvailable[0].quotes[i]?.date;
+        if (dateValue) {
+          dates.push(dateValue.toISOString().split("T")[0]);
+        }
         
-        res.json({
-            portfolioValue,
-            investedAmount,
-            profitLoss,
-            percentGainLoss,
-            dailyChange,
-            dailyChangePercent,
-            avgPE,
-            averageDividendYield,
-            totalMarketCap,
-            dates,
-            profitLossHistory,
-            dailyHistory,
-            dailyDates,
-            low52,
-            high52,
-            topStock,
-            worstStock,
-            breakdown: holdings.map((h) => {
-                const q = quotesArray.find((qq) => qq.symbol == h.symbol);
-                return {
-                    symbol:h.symbol,
-                    shares:h.shares,
-                    buyPrice:h.buy_price,
-                    currentPrice:q?.regularMarketPrice || 0,
-                    prevClose:q?.regularMarketPreviousClose || 0,
-                    marketCap: q?.marketCap || null,
-                    peRatio: q?.trailingPE || null,
-                    dividendYield: q?.dividendYield || null,
-                }
-            })
-        })
-    } catch(err) {
-        console.log(err)
-        res.status(500).json(err)
+        portfolioValueHistory.push(totalValueAtPoint);
+        profitLossHistory.push(totalValueAtPoint - investedAmount);
+      }
     }
+
+    // Calculate daily percentage changes
+    const dailyHistory = [];
+    const dailyDates = [];
+
+    for (let i = 1; i < portfolioValueHistory.length; i++) {
+      const prevValue = portfolioValueHistory[i - 1];
+      const currValue = portfolioValueHistory[i];
+      
+      const pctChange =
+        prevValue > 0 ? ((currValue - prevValue) / prevValue) * 100 : 0;
+      
+      dailyHistory.push(pctChange);
+      dailyDates.push(dates[i]);
+    }
+
+    // Calculate 52-week range
+    const low52 = holdings.reduce((sum, h) => {
+      const quote = quoteMap.get(h.symbol);
+      if (!quote) return sum;
+      const shares = Number(h.shares);
+      const low = quote.fiftyTwoWeekLow || 0;
+      return sum + shares * low;
+    }, 0);
+
+    const high52 = holdings.reduce((sum, h) => {
+      const quote = quoteMap.get(h.symbol);
+      if (!quote) return sum;
+      const shares = Number(h.shares);
+      const high = quote.fiftyTwoWeekHigh || 0;
+      return sum + shares * high;
+    }, 0);
+
+    // Calculate individual stock performance
+    const stockPerformance = holdings
+      .map((h) => {
+        const quote = quoteMap.get(h.symbol);
+        if (!quote) return null;
+        
+        const shares = Number(h.shares);
+        const buyPrice = Number(h.buy_price);
+        const currentPrice = quote.regularMarketPrice || 0;
+        
+        const invested = buyPrice * shares;
+        const currentValue = currentPrice * shares;
+        const gainLoss = currentValue - invested;
+        const pct = invested > 0 ? (gainLoss / invested) * 100 : 0;
+        
+        return { symbol: h.symbol, gainLoss, pct };
+      })
+      .filter(Boolean);
+
+    const topStock = stockPerformance.length > 0
+      ? stockPerformance.reduce((a, b) => (b.pct > a.pct ? b : a))
+      : null;
+    
+    const worstStock = stockPerformance.length > 0
+      ? stockPerformance.reduce((a, b) => (b.pct < a.pct ? b : a))
+      : null;
+
+    // Build detailed breakdown
+    const breakdown = holdings.map((h) => {
+      const quote = quoteMap.get(h.symbol);
+      return {
+        symbol: h.symbol,
+        shares: h.shares,
+        buyPrice: h.buy_price,
+        currentPrice: quote?.regularMarketPrice || 0,
+        prevClose: quote?.regularMarketPreviousClose || 0,
+        marketCap: quote?.marketCap || null,
+        peRatio: quote?.trailingPE || null,
+        dividendYield: quote?.dividendYield || null,
+        valid: !!quote,
+      };
+    });
+
+    const response = {
+      portfolioValue,
+      investedAmount,
+      profitLoss,
+      percentGainLoss,
+      dailyChange,
+      dailyChangePercent,
+      avgPE,
+      averageDividendYield,
+      totalMarketCap,
+      dates,
+      profitLossHistory,
+      portfolioValueHistory,
+      dailyHistory,
+      dailyDates,
+      low52,
+      high52,
+      topStock,
+      worstStock,
+      breakdown,
+      meta: {
+        totalHoldings: holdings.length,
+        validHoldings: holdings.length - invalidHoldings,
+        invalidHoldings,
+        historicalDataPoints: dates.length,
+        calculatedAt: new Date().toISOString(),
+      },
+    };
+
+    // Cache the response
+    setCache(cacheKey, response);
+
+    res.json(response);
+  } catch (err) {
+    console.error("Portfolio calculation error:", err);
+    res.status(500).json({ 
+      error: "Failed to calculate portfolio metrics",
+      message: err.message 
+    });
+  }
 });
 
-export default portfolioRouter
+// Health check endpoint
+portfolioRouter.get("/:userId/health", async (req, res) => {
+  res.json({ 
+    status: "ok",
+    cacheSize: cache.size,
+    timestamp: new Date().toISOString()
+  });
+});
+
+export default portfolioRouter;
