@@ -44,7 +44,7 @@ addWatchlistRouter.post("/add/:userId",async (req,res) => {
 addWatchlistRouter.delete(`/remove/:userId/:ticker`, async (req,res) => {
     try {
         const { userId , ticker } = req.params;
-        await pool.query("DELETE FROM watchlist WHERE ticker = $1 AND user_id = $2" , [ticker , userId]);
+        await pool.query("DELETE FROM watchlist WHERE symbol = $1 AND user_id = $2" , [ticker , userId]);
         res.status(200).json({message:'success'})
     } catch(err) {
         res.status(500).json(err)
