@@ -18,7 +18,7 @@ export function checkAuth(req, res, next) {
     if (!token && req.headers.authorization) {
         const authHeader = req.headers.authorization;
         if (authHeader.startsWith("Bearer ")) {
-            token = authHeader.substring(7); // Remove "Bearer " prefix
+            token = authHeader.substring(7); 
             console.log("📱 Token from Authorization header");
         }
     }

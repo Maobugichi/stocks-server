@@ -1,6 +1,7 @@
 import { Router } from "express";
 import pool from "../db.js";
 import yahooFinance from "yahoo-finance2";
+import { checkAuth } from "../checkAuth.js";
 
 const portfolioRouter = Router();
 
@@ -24,7 +25,7 @@ function setCache(key, data) {
   cache.set(key, { data, timestamp: Date.now() });
 }
 
-// Clear cache for specific user
+
 function clearUserCache(userId) {
   const cacheKey = getCacheKey(userId, "portfolio");
   cache.delete(cacheKey);
@@ -80,9 +81,10 @@ async function fetchHistorySafely(symbols, period1, period2) {
   return results;
 }
 
-// GET portfolio data
-portfolioRouter.get("/:userId", async (req, res) => {
-  const { userId } = req.params;
+
+portfolioRouter.get("/", checkAuth, async (req, res) => {
+
+  const userId = req.user.userId;
   const { skipCache } = req.query;
   
   try {
