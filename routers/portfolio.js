@@ -83,12 +83,12 @@ async function fetchHistorySafely(symbols, period1, period2) {
 
 
 portfolioRouter.get("/", checkAuth, async (req, res) => {
-
-  const userId = req.user.userId;
+  const userId = req.user.id;
   const { skipCache } = req.query;
+  console.log(userId)
   
   try {
-    // Check cache first (unless skipCache is true)
+  
     if (!skipCache) {
       const cacheKey = getCacheKey(userId, "portfolio");
       const cachedData = getFromCache(cacheKey);
@@ -100,7 +100,7 @@ portfolioRouter.get("/", checkAuth, async (req, res) => {
 
     console.log(`📊 Fetching fresh portfolio data for user ${userId}`);
 
-    // Fetch holdings from database
+    
     const result = await pool.query(
       "SELECT id, symbol, shares, buy_price FROM portfolio WHERE user_id = $1 ORDER BY symbol",
       [userId]
