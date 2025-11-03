@@ -46,7 +46,7 @@ export function checkAuth(req, res, next) {
         console.error("❌ Token verification failed:", err.message);
         return res.status(401).json({ 
             message: "Invalid or expired token",
-            error: err.name // TokenExpiredError, JsonWebTokenError, etc.
+            error: err.name 
         });
     }
 }

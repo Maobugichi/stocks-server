@@ -53,6 +53,11 @@ app.use(
   })
 );
 
+app.get("/health", (req, res) => {
+  console.log("Received keep-alive ping 🟢");
+  res.status(200).send("OK");
+});
+
 
 app.use("/api/sign-up/",router);
 app.use("/api/login/",loginRouter);
