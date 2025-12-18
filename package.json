@@ -25,6 +25,7 @@
     "jsonwebtoken": "^9.0.2",
     "node-cache": "^5.1.2",
     "node-cron": "^4.2.1",
+    "p-limit": "^7.2.0",
     "passport": "^0.7.0",
     "passport-github": "^1.1.0",
     "passport-github2": "^0.1.12",
