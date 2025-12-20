@@ -29,7 +29,7 @@ dotenv.config();
 
 const app = express();
 const port = 3000;
-const allowedOrigins = ["http://localhost:5173","https://maobugichi.github.io"]
+const allowedOrigins = ["http://localhost:5173","https://maobugichi.github.io" , "https://stockwatch-ochre.vercel.app/"]
 const server = http.createServer(app);
 
 initSocket(server);
