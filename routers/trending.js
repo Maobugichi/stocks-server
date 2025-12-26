@@ -466,7 +466,7 @@ trendingPageRouter.get('/cache-stats', (req, res) => {
   });
 });
 
-trendingPageRouter.delete('/cache/:key?', (req, res) => {
+trendingPageRouter.delete('/cache/:key', (req, res) => {
   const { key } = req.params;
   
   if (key) {
