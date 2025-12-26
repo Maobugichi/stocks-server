@@ -8,6 +8,11 @@ const portfolioRouter = Router();
 const cache = new Map();
 const CACHE_TTL = 2 * 60 * 1000; 
 
+// Configure Yahoo Finance
+yahooFinance.setGlobalConfig({
+  validation: { logErrors: false, logWarnings: false },
+});
+
 function getCacheKey(userId, type) {
   return `${userId}:${type}`;
 }
@@ -25,55 +30,127 @@ function setCache(key, data) {
   cache.set(key, { data, timestamp: Date.now() });
 }
 
-
 function clearUserCache(userId) {
   const cacheKey = getCacheKey(userId, "portfolio");
   cache.delete(cacheKey);
   console.log(`🗑️ Cleared cache for user ${userId}`);
 }
 
-// Clear all cache
 function clearAllCache() {
   const size = cache.size;
   cache.clear();
   console.log(`🗑️ Cleared all cache (${size} entries)`);
 }
 
-// Batch fetch with error handling for individual symbols
+// Helper: Fetch with timeout and retry
+async function fetchWithRetry(fn, options = {}) {
+  const { timeout = 8000, retries = 2, context = 'unknown' } = options;
+  
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const result = await Promise.race([
+        fn(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout')), timeout)
+        )
+      ]);
+      return result;
+    } catch (err) {
+      console.error(`❌ [${context}] Attempt ${attempt + 1}/${retries} failed:`, err.message);
+      
+      if (attempt < retries - 1) {
+        const delay = 1000 * (attempt + 1);
+        console.log(`⏳ Retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+// Improved quote fetching with better error handling
 async function fetchQuotesSafely(symbols) {
+  if (!symbols.length) return [];
+  
+  console.log(`📊 Fetching quotes for ${symbols.length} symbols...`);
   const results = [];
-  const batchSize = 10;
+  const batchSize = 5; // Reduced from 10 to avoid rate limits
   
   for (let i = 0; i < symbols.length; i += batchSize) {
     const batch = symbols.slice(i, i + batchSize);
+    
     try {
-      const quotes = await yahooFinance.quote(batch);
+      // Add delay between batches
+      if (i > 0) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      
+      const quotes = await fetchWithRetry(
+        () => yahooFinance.quote(batch, {
+          fields: ['symbol', 'regularMarketPrice', 'regularMarketPreviousClose', 
+                   'marketCap', 'trailingPE', 'dividendYield', 
+                   'fiftyTwoWeekLow', 'fiftyTwoWeekHigh']
+        }),
+        { context: `Batch ${i}-${i + batchSize}`, timeout: 8000, retries: 2 }
+      );
+      
       const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
+      console.log(`✅ Fetched ${quotesArray.length}/${batch.length} quotes`);
       results.push(...quotesArray);
+      
     } catch (err) {
-      console.error(`Error fetching batch ${i}-${i + batchSize}:`, err.message);
-      batch.forEach(symbol => {
-        results.push({ symbol, error: true });
-      });
+      console.error(`❌ Batch ${i}-${i + batchSize} completely failed:`, err.message);
+      
+      // Try individual fallback
+      for (const symbol of batch) {
+        try {
+          await new Promise(r => setTimeout(r, 200));
+          const quote = await fetchWithRetry(
+            () => yahooFinance.quote(symbol),
+            { context: symbol, timeout: 5000, retries: 1 }
+          );
+          results.push(quote);
+          console.log(`✅ Fallback success: ${symbol}`);
+        } catch (symbolErr) {
+          console.error(`❌ Failed to fetch ${symbol}:`, symbolErr.message);
+          results.push({ symbol, error: true, errorMessage: symbolErr.message });
+        }
+      }
     }
   }
+  
+  const successCount = results.filter(r => !r.error).length;
+  console.log(`📊 Final: ${successCount}/${symbols.length} quotes fetched successfully`);
   
   return results;
 }
 
+// Improved history fetching
 async function fetchHistorySafely(symbols, period1, period2) {
+  if (!symbols.length) return [];
+  
+  console.log(`📈 Fetching history for ${symbols.length} symbols...`);
   const results = [];
   
   for (const symbol of symbols) {
     try {
-      const history = await yahooFinance.chart(symbol, {
-        period1,
-        period2,
-        interval: "1d",
-      });
+      await new Promise(r => setTimeout(r, 300)); // Rate limiting
+      
+      const history = await fetchWithRetry(
+        () => yahooFinance.chart(symbol, {
+          period1,
+          period2,
+          interval: "1d",
+        }),
+        { context: `History ${symbol}`, timeout: 8000, retries: 1 }
+      );
+      
       results.push({ symbol, data: history });
+      console.log(`✅ History fetched: ${symbol}`);
+      
     } catch (err) {
-      console.error(`Error fetching history for ${symbol}:`, err.message);
+      console.error(`❌ History failed for ${symbol}:`, err.message);
       results.push({ symbol, data: null, error: true });
     }
   }
@@ -81,26 +158,25 @@ async function fetchHistorySafely(symbols, period1, period2) {
   return results;
 }
 
-
 portfolioRouter.get("/", checkAuth, async (req, res) => {
   const userId = req.user.id;
   const { skipCache } = req.query;
-  console.log(userId)
-  
+  const startTime = Date.now();
+ 
   try {
-  
+    // Check cache
     if (!skipCache) {
       const cacheKey = getCacheKey(userId, "portfolio");
       const cachedData = getFromCache(cacheKey);
       if (cachedData) {
-        console.log(`✓ Cache hit for user ${userId}`);
+        console.log(`✅ Cache hit for user ${userId} (${Date.now() - startTime}ms)`);
         return res.json({ ...cachedData, cached: true });
       }
     }
 
     console.log(`📊 Fetching fresh portfolio data for user ${userId}`);
 
-    
+    // Get holdings from database
     const result = await pool.query(
       "SELECT id, symbol, shares, buy_price FROM portfolio WHERE user_id = $1 ORDER BY symbol",
       [userId]
@@ -109,7 +185,10 @@ portfolioRouter.get("/", checkAuth, async (req, res) => {
     const holdings = result.rows;
 
     if (holdings.length === 0) {
-      return res.json({ message: "No holdings available" });
+      return res.json({ 
+        message: "No holdings available",
+        breakdown: []
+      });
     }
 
     if (holdings.length > 100) {
@@ -121,15 +200,43 @@ portfolioRouter.get("/", checkAuth, async (req, res) => {
 
     const symbols = holdings.map((h) => h.symbol);
 
+    // Fetch quotes with improved error handling
     const quotesArray = await fetchQuotesSafely(symbols);
+    
+    // Log errors for debugging
+    const erroredQuotes = quotesArray.filter(q => q.error);
+    if (erroredQuotes.length > 0) {
+      console.warn(`⚠️ ${erroredQuotes.length} quotes failed:`, erroredQuotes.map(q => q.symbol));
+    }
+    
     const quoteMap = new Map(
       quotesArray
-        .filter(q => !q.error)
+        .filter(q => !q.error && q.regularMarketPrice)
         .map(q => [q.symbol, q])
     );
 
+    console.log(`📊 Valid quotes: ${quoteMap.size}/${symbols.length}`);
+
+    // If no valid quotes, return error
+    if (quoteMap.size === 0) {
+      return res.status(503).json({
+        error: "Unable to fetch market data",
+        message: "Yahoo Finance API is temporarily unavailable. Please try again in a moment.",
+        breakdown: holdings.map(h => ({
+          id: h.id,
+          symbol: h.symbol,
+          shares: h.shares,
+          buyPrice: h.buy_price,
+          currentPrice: 0,
+          valid: false,
+          errorMessage: "API unavailable"
+        }))
+      });
+    }
+
     const validSymbols = symbols.filter(s => quoteMap.has(s));
     
+    // Fetch history only for valid symbols
     const now = new Date();
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(now.getMonth() - 1);
@@ -141,6 +248,7 @@ portfolioRouter.get("/", checkAuth, async (req, res) => {
         .map(h => [h.symbol, h.data])
     );
 
+    // Calculate portfolio metrics
     let portfolioValue = 0;
     let investedAmount = 0;
     let yesterdayPortfolioValue = 0;
@@ -194,6 +302,7 @@ portfolioRouter.get("/", checkAuth, async (req, res) => {
     const averageDividendYield =
       countDividend > 0 ? totalDividendYield / countDividend : null;
 
+    // Portfolio history calculation
     const historiesAvailable = Array.from(historyMap.values());
     
     let dates = [];
@@ -290,8 +399,10 @@ portfolioRouter.get("/", checkAuth, async (req, res) => {
 
     const breakdown = holdings.map((h) => {
       const quote = quoteMap.get(h.symbol);
+      const erroredQuote = quotesArray.find(q => q.symbol === h.symbol && q.error);
+      
       return {
-        id: h.id, // Include ID for delete/update operations
+        id: h.id,
         symbol: h.symbol,
         shares: h.shares,
         buyPrice: h.buy_price,
@@ -301,6 +412,7 @@ portfolioRouter.get("/", checkAuth, async (req, res) => {
         peRatio: quote?.trailingPE || null,
         dividendYield: quote?.dividendYield || null,
         valid: !!quote,
+        errorMessage: erroredQuote?.errorMessage || null,
       };
     });
 
@@ -330,17 +442,18 @@ portfolioRouter.get("/", checkAuth, async (req, res) => {
         invalidHoldings,
         historicalDataPoints: dates.length,
         calculatedAt: new Date().toISOString(),
+        processingTime: `${Date.now() - startTime}ms`,
       },
     };
 
     // Cache the response
     const cacheKey = getCacheKey(userId, "portfolio");
     setCache(cacheKey, response);
-    console.log(`✓ Cached portfolio data for user ${userId}`);
+    console.log(`✅ Portfolio calculated in ${Date.now() - startTime}ms`);
 
     res.json(response);
   } catch (err) {
-    console.error("Portfolio calculation error:", err);
+    console.error("❌ Portfolio calculation error:", err);
     res.status(500).json({ 
       error: "Failed to calculate portfolio metrics",
       message: err.message 
@@ -354,7 +467,6 @@ portfolioRouter.post("/save-port/:userId", async (req, res) => {
   const { ticker, shares, buyPrice } = req.body;
 
   try {
-    // Validate input
     if (!ticker || !shares || !buyPrice) {
       return res.status(400).json({ 
         error: "Missing required fields",
@@ -362,7 +474,6 @@ portfolioRouter.post("/save-port/:userId", async (req, res) => {
       });
     }
 
-    // Validate numeric values
     if (isNaN(shares) || isNaN(buyPrice) || Number(shares) <= 0 || Number(buyPrice) <= 0) {
       return res.status(400).json({ 
         error: "Invalid values",
@@ -370,15 +481,12 @@ portfolioRouter.post("/save-port/:userId", async (req, res) => {
       });
     }
 
-    // Insert new holding
     const result = await pool.query(
       "INSERT INTO portfolio (user_id, symbol, shares, buy_price) VALUES ($1, $2, $3, $4) RETURNING id, symbol, shares, buy_price",
       [userId, ticker.toUpperCase(), shares, buyPrice]
     );
 
-    // Clear cache immediately after update
     clearUserCache(userId);
-
     console.log(`✅ Added holding ${ticker} for user ${userId}`);
 
     res.json({ 
@@ -389,7 +497,6 @@ portfolioRouter.post("/save-port/:userId", async (req, res) => {
   } catch (err) {
     console.error("Error saving portfolio:", err);
     
-    // Handle duplicate entry
     if (err.code === '23505') {
       return res.status(409).json({ 
         error: "Duplicate holding",
@@ -409,7 +516,6 @@ portfolioRouter.delete("/:userId/holdings/:holdingId", async (req, res) => {
   const { userId, holdingId } = req.params;
 
   try {
-    // Validate holdingId is a number
     if (isNaN(holdingId)) {
       return res.status(400).json({ 
         error: "Invalid holding ID",
@@ -417,13 +523,11 @@ portfolioRouter.delete("/:userId/holdings/:holdingId", async (req, res) => {
       });
     }
 
-    // Delete the holding (ensure it belongs to this user)
     const result = await pool.query(
       "DELETE FROM portfolio WHERE id = $1 AND user_id = $2 RETURNING symbol",
       [holdingId, userId]
     );
 
-    // Check if holding was found and deleted
     if (result.rowCount === 0) {
       return res.status(404).json({ 
         error: "Holding not found",
@@ -431,7 +535,6 @@ portfolioRouter.delete("/:userId/holdings/:holdingId", async (req, res) => {
       });
     }
 
-    // Clear cache immediately after deletion
     clearUserCache(userId);
 
     const deletedSymbol = result.rows[0].symbol;
@@ -457,7 +560,6 @@ portfolioRouter.patch("/:userId/holdings/:holdingId", async (req, res) => {
   const { ticker, shares, buyPrice } = req.body;
 
   try {
-    // Validate holdingId
     if (isNaN(holdingId)) {
       return res.status(400).json({ 
         error: "Invalid holding ID",
@@ -465,7 +567,6 @@ portfolioRouter.patch("/:userId/holdings/:holdingId", async (req, res) => {
       });
     }
 
-    // Build dynamic update query
     const updates = [];
     const values = [];
     let paramCount = 1;
@@ -502,10 +603,8 @@ portfolioRouter.patch("/:userId/holdings/:holdingId", async (req, res) => {
       });
     }
 
-    // Add WHERE clause parameters
     values.push(holdingId, userId);
 
-    // Execute update
     const result = await pool.query(
       `UPDATE portfolio SET ${updates.join(', ')} WHERE id = $${paramCount++} AND user_id = $${paramCount} RETURNING id, symbol, shares, buy_price`,
       values
@@ -518,9 +617,7 @@ portfolioRouter.patch("/:userId/holdings/:holdingId", async (req, res) => {
       });
     }
 
-    // Clear cache immediately after update
     clearUserCache(userId);
-
     console.log(`✏️ Updated holding ${result.rows[0].symbol} (ID: ${holdingId}) for user ${userId}`);
 
     res.json({ 
@@ -531,7 +628,6 @@ portfolioRouter.patch("/:userId/holdings/:holdingId", async (req, res) => {
   } catch (err) {
     console.error("Error updating holding:", err);
     
-    // Handle duplicate entry
     if (err.code === '23505') {
       return res.status(409).json({ 
         error: "Duplicate holding",
@@ -556,7 +652,7 @@ portfolioRouter.delete("/:userId/cache", (req, res) => {
   });
 });
 
-// DELETE - Clear all cache (admin endpoint - add auth!)
+// DELETE - Clear all cache
 portfolioRouter.delete("/cache/all", (req, res) => {
   clearAllCache();
   res.json({ 
