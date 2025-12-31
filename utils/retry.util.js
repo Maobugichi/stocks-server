@@ -1,4 +1,4 @@
-import { CONFIG } from "../config/yahoo-finance.config.js";
+import { CONFIG } from "../configs/yahoo-finance.config.js";
 
 export const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
