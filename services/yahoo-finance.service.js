@@ -30,7 +30,7 @@ class YahooFinanceService {
 
         const quote = await withTimeout(
             fetchWithRetry(
-                () => yahooFinance.quote(symbol),
+                () => yahooFinance.quote(symbol,{ validateResult: false }),
                 { context:` Search ${symbol}`}
             ),
             CONFIG.SEARCH_TIMEOUT,
@@ -89,7 +89,8 @@ class YahooFinanceService {
                 () => yahooFinance.quote(batch , {
                     fields: ['symbol', 'regularMarketPrice', 'regularMarketChange', 
                    'regularMarketChangePercent', 'marketCap', 'regularMarketVolume',
-                   'currency', 'fullExchangeName']
+                   'currency', 'fullExchangeName'],
+                    validateResult: false 
                 }), 
                 { context: `Batch ${batchIndex + 1}`}
             );
@@ -130,14 +131,16 @@ class YahooFinanceService {
         return formatted;
         }
 
-    async fetchScreenerData(screenerId) {
-        const cacheKey = `screener_${screenerId}`
+    async fetchScreenerData(screenerId,count = 25) {
+        const cacheKey = `screener_${screenerId}_${count}`
         const { data, hit } = cacheService.get(cacheKey);
         if (hit) return data;
 
         try {
             const result = await fetchWithRetry(
-                () => yahooFinance.screener({scrIds: screenerId , count: 10 }),
+                () => yahooFinance.screener({scrIds: screenerId , count },
+                    { validateResult: false }
+                ),
                 { context: `Screener ${screenerId}` }
             );
 
@@ -164,7 +167,7 @@ class YahooFinanceService {
         
         try {
         const trend = await fetchWithRetry(
-            () => yahooFinance.trendingSymbols('US'),
+            () => yahooFinance.trendingSymbols('US',{ validateResult: false }),
             { context: 'Trending Symbols' }
         );
         
