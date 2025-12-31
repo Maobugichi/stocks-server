@@ -661,7 +661,7 @@ portfolioRouter.delete("/cache/all", (req, res) => {
   });
 });
 
-// GET - Health check endpoint
+
 portfolioRouter.get("/:userId/health", async (req, res) => {
   res.json({ 
     status: "ok",

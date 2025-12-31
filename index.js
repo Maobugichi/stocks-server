@@ -23,6 +23,7 @@ import oauthRouter from "./routers/oauth.js";
 import onboardRouter from "./routers/onboarding.js";
 import trendingPageRouter from "./routers/trending.js";
 import authRouter from "./routers/logout.js";
+import signupRouter from "./routers/signup.js";
 
 
 dotenv.config();
@@ -59,7 +60,7 @@ app.get("/health", (req, res) => {
 });
 
 
-app.use("/api/sign-up/",router);
+app.use("/api/sign-up/",signupRouter);
 app.use("/api/login/",loginRouter);
 app.use("/api/logout",authRouter);
 app.use("/api/",checkAuth,dashRouter);
