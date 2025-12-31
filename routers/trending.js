@@ -1,6 +1,6 @@
 import { Router } from "express";
 import trendingController from "../controllers/trending.controller.js";
-import { validateTickerParam } from "../middlewares/validation.middleware.js";
+import { validateTickerParam } from "../middlewares/validation.middlesware.js"
 
 const trendingPageRouter = Router();
 
