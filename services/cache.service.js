@@ -1,5 +1,5 @@
 import NodeCache from "node-cache";
-import { CACHE_CONFIG , CONFIG } from "../configs/yahoo-finance.config";
+import { CACHE_CONFIG , CONFIG } from "../configs/yahoo-finance.config.js";
 
 class CacheService {
     constructor() {

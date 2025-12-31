@@ -2,7 +2,7 @@ import cacheService from "../services/cache.service.js";
 import yahooFinanceService from "../services/yahoo-finance.service.js";
 import tickerService from "../services/ticker.service.js";
 import { withTimeout } from "../utils/retry.util.js";
-import { CONFIG } from "../configs/yahoo-finance.config";
+import { CONFIG } from "../configs/yahoo-finance.config.js";
 
 class TrendingController {
     async revalidateInBackground(cacheKey, fetchFn) {
