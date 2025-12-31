@@ -78,7 +78,7 @@ class YahooFinanceService {
             cacheService.set(cacheKey, flatResults , CONFIG.CACHE_TTL.LIVE_DATA);
         }
 
-        console.log(`Fetched ${flatResults.length}/${symbols.length} quotes successfully`);
+         console.log(`Fetched ${flatResults.length}/${symbols.length} quotes successfully`);
 
          return flatResults;
     }
@@ -95,15 +95,40 @@ class YahooFinanceService {
             );
 
             const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
-            const formatted = quotesArray.map(q => this.formatQuote(q)).filter(Boolean);
+            const formatted = quotesArray
+            .filter(q => q && q.symbol && q.regularMarketPrice !== undefined)
+            .map(q => this.formatQuote(q))
+            .filter(Boolean);
 
             console.log(`Batch ${batchIndex + 1}: ${formatted.length}/${batch.length} quotes`);
             return formatted;
         } catch(err) {
            console.error(`Batch ${batchIndex + 1} failed completely:`, err.message);
-           return []; 
+            return await this._fetchIndividually(batch, batchIndex); 
         }
     }
+
+    async _fetchIndividually(batch, batchIndex) {
+        console.log(`🔄 Fetching batch ${batchIndex + 1} individually...`);
+        
+        const results = await Promise.allSettled(
+            batch.map(symbol => 
+            yahooFinance.quote(symbol, { validateResult: false })
+                .then(quote => this.formatQuote(quote))
+                .catch(err => {
+                console.log(`⚠️ Skipping invalid ticker: ${symbol}`);
+                return null;
+                })
+            )
+        );
+  
+        const formatted = results
+            .filter(r => r.status === 'fulfilled' && r.value)
+            .map(r => r.value);
+        
+        console.log(`✅ Batch ${batchIndex + 1} (individual): ${formatted.length}/${batch.length} quotes`);
+        return formatted;
+        }
 
     async fetchScreenerData(screenerId) {
         const cacheKey = `screener_${screenerId}`

@@ -27,7 +27,7 @@ export const YAHOO_FINANCE_CONFIG = {
   validation: {
     logErrors: false,
     logWarnings: false,
-  },
+  }
 };
 
 export const CACHE_CONFIG = {

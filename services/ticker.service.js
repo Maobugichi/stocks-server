@@ -18,7 +18,7 @@ class TickerService  {
             const tickers = res.rows.map(r => r.symbol);
             cacheService.set(cacheKey , tickers , CONFIG.CACHE_TTL.TICKERS);
 
-            console.log(tickers)
+           
             return tickers
         } catch(err) {
             console.error('DB query failed', err.message);

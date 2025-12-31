@@ -23,7 +23,7 @@ class TrendingController {
     }
 
     async fetchTrendingStockData() {
-        const tickers = await tickerService.getRandomTickers(30);
+        const tickers = await tickerService.getRandomTickers(100);
 
         const [liveData, gainers, losers , active, isTrendingQuote] = await Promise.allSettled([
             yahooFinanceService.fetchLiveData(tickers),
