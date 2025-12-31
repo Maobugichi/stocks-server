@@ -160,3 +160,5 @@ class YahooFinanceService {
         }
   }
 }
+
+export default new YahooFinanceService();
