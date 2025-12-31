@@ -23,7 +23,7 @@ trendingPageRouter.get(
 );
 
 trendingPageRouter.delete(
-  "/cache/:key?", 
+  "/cache/:key", 
   trendingController.deleteCacheKey.bind(trendingController)
 );
 
