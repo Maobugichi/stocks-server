@@ -39,7 +39,7 @@ class PortfolioController {
 
             const symbols = holdings.map((h) => h.symbol);
 
-            const quotesArray = await yahooFinanceService.fetchQuotesSafely(symbols, {
+            const quotesArray = await yahooFinanceService.fetchQuotesBatch(symbols, {
                 batchSize: 5,
                 batchDelay: 500,
                 individualDelay: 200,
