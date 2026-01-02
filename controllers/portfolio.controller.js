@@ -1,8 +1,8 @@
 import portfolioCacheService from "../services/portfolio-cache.service.js";
-import portfolioDataService from "../services/portfolio-data.service";
+import portfolioDataService from "../services/portfolio-data.service.js";
 import yahooFinanceService from "../services/yahoo-finance.service.js"; 
-import portfolioCalculationService from "../services/portfolio-calculation.service";
-import { PORTFOLIO_CONFIG } from "../configs/portfolio.config";
+import portfolioCalculationService from "../services/portfolio-calculation.service.js";
+import { PORTFOLIO_CONFIG } from "../configs/portfolio.config.js";
 
 class PortfolioController {
     async getPortfolio(req,res) {
