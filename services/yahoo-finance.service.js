@@ -66,68 +66,61 @@ class YahooFinanceService {
         return result
     }
 
-    async fetchQuotesBatch(symbols , options = {}) {
-        if (!symbols.length) return [];
-
-        const {
-            batchSize = 5,
-            batchDelay = 500,
-            individualDelay = 200,
-            fields = [
-                'symbol',
-                'regularMarketPrice',
-                'regularMarketPreviousClose',
-                'marketCap',
-                'trailingPE',
-                'dividendYield',
-                'fiftyTwoWeekLow',
-                'fiftyTwoWeekHigh'
-            ] 
-            
-        } = options;
-
-        console.log(`fetching ${symbols.length} quotes in batches`);
-        const results = [];
-
-        for (let i = 0; i < symbols.length; i += batchSize) {
-            const batch = symbols.slice(i, i + batchSize);
-
+   async fetchQuotesSafely(symbols) {
+    if (!symbols.length) return [];
+    
+    console.log(`📊 Fetching quotes for ${symbols.length} symbols...`);
+    const results = [];
+    const batchSize = 5;
+    
+    for (let i = 0; i < symbols.length; i += batchSize) {
+        const batch = symbols.slice(i, i + batchSize);
+        
+        try {
+      
+        if (i > 0) {
+            await delay(500);
+        }
+        
+        const quotes = await fetchWithRetry(
+            () => yahooFinance.quote(batch, {
+            fields: ['symbol', 'regularMarketPrice', 'regularMarketPreviousClose', 
+                    'marketCap', 'trailingPE', 'dividendYield', 
+                    'fiftyTwoWeekLow', 'fiftyTwoWeekHigh']
+            }),
+            { context: `Batch ${i}-${i + batchSize}`, timeout: 8000, retries: 2 }
+        );
+        
+        const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
+        console.log(`✅ Fetched ${quotesArray.length}/${batch.length} quotes`);
+        results.push(...quotesArray);
+        
+        } catch (err) {
+        console.error(`Batch ${i}-${i + batchSize} completely failed:`, err.message);
+        
+      
+        for (const symbol of batch) {
             try {
-                if (i > 0) {
-                    await delay(batchDelay);
-                }
-
-                const quotes = await fetchWithRetry(
-                    () => 
-                        yahooFinance.quote(batch, {
-                            fields,
-                          
-                        }),
-                    {
-                        context: `Batch ${i}-${i + batchSize}`
-                    }
-                );
-
-                const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
-
-                console.log(`Fetched ${quotesArray.length}/${batch.length} quotes`);
-                results.push(...quotesArray);
-            } catch(err) {
-                console.error(`Batch ${i}-${i + batchSize} failed:`, err.message);
-                   
-                const individualResults = await this.#fetchIndividually(
-                 batch,
-                 individualDelay
-                );
-                results.push(...individualResults);
+            await new Promise(r => setTimeout(r, 200));
+            const quote = await fetchWithRetry(
+                () => yahooFinance.quote(symbol),
+                { context: symbol, timeout: 5000, retries: 1 }
+            );
+            results.push(quote);
+            console.log(`✅ Fallback success: ${symbol}`);
+            } catch (symbolErr) {
+            console.error(`❌ Failed to fetch ${symbol}:`, symbolErr.message);
+            results.push({ symbol, error: true, errorMessage: symbolErr.message });
             }
         }
-
-         const successCount = results.filter((r) => !r.error).length;
-         console.log(`Final: ${successCount}/${symbols.length} quotes fetched`);
-
-         return results;
+        }
     }
+    
+    const successCount = results.filter(r => !r.error).length;
+    console.log(`📊 Final: ${successCount}/${symbols.length} quotes fetched successfully`);
+    
+    return results;
+   }
 
     async fetchLiveData(symbols) {
         if (!symbols?.length) return [];
