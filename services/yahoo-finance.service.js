@@ -1,6 +1,6 @@
 import yahooFinance from "yahoo-finance2";
 import cacheService from "./cache.service.js";
-import { fetchWithRetry, withTimeout } from "../utils/retry.util.js";
+import { delay, fetchWithRetry, withTimeout } from "../utils/retry.util.js";
 import { limiter } from "../utils/rate-limiter.util.js";
 import { CONFIG , YAHOO_FINANCE_CONFIG } from "../configs/yahoo-finance.config.js";
 
@@ -23,29 +23,110 @@ class YahooFinanceService {
         }
     }
 
+    formatQuoteDetailed(quote) {
+        if (!quote?.symbol) return null;
+
+        return {
+        symbol: quote.symbol,
+        regularMarketPrice: quote.regularMarketPrice || 0,
+        regularMarketPreviousClose: quote.regularMarketPreviousClose || 0,
+        marketCap: quote.marketCap || null,
+        trailingPE: quote.trailingPE || null,
+        dividendYield: quote.dividendYield || null,
+        fiftyTwoWeekLow: quote.fiftyTwoWeekLow || null,
+        fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh || null,
+        };
+    }
+
     async fetchQuote(symbol) {
-        const cacheKey = `search_${symbol}`;
-        const { data , hit } = cacheService.get(cacheKey);
-        if (hit) return data;
+        const { useCache = true, format = true, fields = [] } = options;
+        const cacheKey = `quote_${symbol}`;
+       if (useCache) {
+          const { data, hit } = cacheService.get(cacheKey);
+          if (hit) return data;
+        }
 
         const quote = await withTimeout(
             fetchWithRetry(
-                () => yahooFinance.quote(symbol,{ validateResult: false }),
-                { context:` Search ${symbol}`}
+                () => yahooFinance.quote(symbol,{ 
+                    validateResult: false ,
+                    ...(fields.length > 0 && { fields })
+                }),
+                { context:`Quote ${symbol}`}
             ),
             CONFIG.SEARCH_TIMEOUT,
             'Search timeout'
         );
 
-        const formatted = this.formatQuote(quote);
-        if (formatted) {
-            cacheService.set(cacheKey, formatted , CONFIG.CACHE_TTL.SEARCH);
-            return formatted
+        const result = format ? this.formatQuote(quote) : quote;
+        if (useCache && result) {
+            cacheService.set(cacheKey, result , CONFIG.CACHE_TTL.SEARCH);
         }
 
-        return quote
+        return result
     }
 
+    async fetchQuotesBatch(symbols , options = {}) {
+        if (!symbols.length) return [];
+
+        const {
+            batchSize = 5,
+            batchDelay = 500,
+            individualDelay = 200,
+            fields = [
+                'symbol',
+                'regularMarketPrice',
+                'regularMarketPreviousClose',
+                'marketCap',
+                'trailingPE',
+                'dividendYield',
+                'fiftyTwoWeekLow',
+                'fiftyTwoWeekHigh'
+            ] 
+        } = options;
+
+        console.log(`fetching ${symbols.length} quotes in batches`);
+        const results = [];
+
+        for (let i = 0; i < symbols.length; i += batchSize) {
+            const batch = symbols.slice(i, i + batchSize);
+
+            try {
+                if (i > 0) {
+                    await delay(batchDelay);
+                }
+
+                const quotes = await fetchWithRetry(
+                    () => 
+                        yahooFinance.quote(batch, {
+                            fields,
+                            validateResult:false
+                        }),
+                    {
+                        context: `Batch ${i}-${i + batchSize}`
+                    }
+                );
+
+                const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
+
+                console.log(`Fetched ${quotesArray.length}/${batch.length} quotes`);
+                results.push(...quotesArray);
+            } catch(err) {
+                console.error(`Batch ${i}-${i + batchSize} failed:`, err.message);
+                   
+                const individualResults = await this.#fetchIndividually(
+                 batch,
+                 individualDelay
+                );
+                results.push(...individualResults);
+            }
+        }
+
+         const successCount = results.filter((r) => !r.error).length;
+         console.log(`Final: ${successCount}/${symbols.length} quotes fetched`);
+
+         return results;
+    }
 
     async fetchLiveData(symbols) {
         if (!symbols?.length) return [];
@@ -109,8 +190,8 @@ class YahooFinanceService {
         }
     }
 
-    async _fetchIndividually(batch, batchIndex) {
-        console.log(`🔄 Fetching batch ${batchIndex + 1} individually...`);
+    async #fetchIndividually(batch, batchIndex) {
+        console.log(`Fetching batch ${batchIndex + 1} individually...`);
         
         const results = await Promise.allSettled(
             batch.map(symbol => 
@@ -129,7 +210,7 @@ class YahooFinanceService {
         
         console.log(`✅ Batch ${batchIndex + 1} (individual): ${formatted.length}/${batch.length} quotes`);
         return formatted;
-        }
+    }
 
     async fetchScreenerData(screenerId,count = 25) {
         const cacheKey = `screener_${screenerId}_${count}`
@@ -186,7 +267,42 @@ class YahooFinanceService {
         console.error(`Trending symbols failed:`, err.message);
         return [];
         }
-  }
+    }
+
+    async fetchHistory(symbols, period1, period2, options = {}) {
+        if (!symbols.length) return [];
+
+        const { delay = 300, interval = '1d' } = options;
+
+        console.log(`fetching history for ${symbols.length} symbols...`);
+        const results = [];
+        for (const symbol of symbols) {
+            try {
+                await delay(delay)
+           
+                const history = await fetchWithRetry(
+                    () => yahooFinance.chart(symbol , {
+                        period1,
+                        period2,
+                        interval
+                    }),
+                    {
+                        context: `History ${symbol}`,
+                        timeout: 8000,
+                        retries: 1
+                });
+
+                results.push({ symbol, data: history});
+                console.log(`history: ${symbol}`)
+            } catch(err) {
+                console.error(` History failed for ${symbol}:`, err.message);
+                results.push({ symbol, data: null, error: true });
+            }
+        }
+
+        return results
+
+    }
 }
 
 export default new YahooFinanceService();
