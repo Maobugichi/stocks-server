@@ -83,6 +83,7 @@ class YahooFinanceService {
                 'fiftyTwoWeekLow',
                 'fiftyTwoWeekHigh'
             ] 
+            
         } = options;
 
         console.log(`fetching ${symbols.length} quotes in batches`);
@@ -100,7 +101,7 @@ class YahooFinanceService {
                     () => 
                         yahooFinance.quote(batch, {
                             fields,
-                            validateResult:false
+                          
                         }),
                     {
                         context: `Batch ${i}-${i + batchSize}`
