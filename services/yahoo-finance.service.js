@@ -39,8 +39,8 @@ class YahooFinanceService {
     }
 
     async fetchQuote(symbol) {
-        const { useCache = true, format = true, fields = [] } = options;
-        const cacheKey = `quote_${symbol}`;
+       const { useCache = true, format = true, fields = [] } = options;
+       const cacheKey = `quote_${symbol}`;
        if (useCache) {
           const { data, hit } = cacheService.get(cacheKey);
           if (hit) return data;
