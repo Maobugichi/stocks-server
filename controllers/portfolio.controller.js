@@ -86,7 +86,7 @@ class PortfolioController {
             const oneMonthAgo = new Date();
             oneMonthAgo.setMonth(now.getMonth() - PORTFOLIO_CONFIG.HISTORY.PERIOD_MONTHS);
 
-            const historyResults = await yahooQuoteService.fetchHistory(
+            const historyResults = await yahooFinanceService.fetchHistory(
                 validSymbols,
                 oneMonthAgo,
                 now
