@@ -1,3 +1,5 @@
+import { delay } from "../utils/retry.util.js";
+
 class PortfolioCalculationService {
     calculatePortfolioMetrics(holdings, quoteMap) {
         let portfolioValue = 0;
@@ -35,13 +37,13 @@ class PortfolioCalculationService {
 
             if (quote.trailingPE && quote.trailingPE > 0) {
                 totalPE += quote.trailingPE;
-                countPE++
+                countPE++;
             }
         });
 
         const profitLoss = portfolioValue - investedAmount;
         const percentGainLoss =
-          invested > 0 ? (profitLoss / investedAmount) * 100 : 0;
+          investedAmount > 0 ? (profitLoss / investedAmount) * 100 : 0;
         const dailyChange = portfolioValue - yesterdayPortfolioValue;
         const dailyChangePercent = 
           yesterdayPortfolioValue > 0
@@ -66,7 +68,7 @@ class PortfolioCalculationService {
     }
 
     calculatePortfolioHistory(holdings, quoteMap, historyMap) {
-        const historiesAvailable = Array.from(historyMap.values);
+        const historiesAvailable = Array.from(historyMap.values());
 
         if (historiesAvailable.length === 0) { 
             return {
@@ -90,7 +92,8 @@ class PortfolioCalculationService {
             const shares = Number(holding.shares);
             const buyPrice = Number(holding.buy_price);
 
-            return sum + (shares * buyPrice)} , 0);
+            return sum + (shares * buyPrice);
+        } , 0);
         
             for (let i = 0; i < numPoints; i++) {
                 let totalValueAtPoint = 0;
@@ -101,7 +104,7 @@ class PortfolioCalculationService {
 
                     if (history?.quotes[i]?.close) {
                         const price = history.quotes[i].close;
-                        totalValueAtPoint += shares * currentPrice
+                        totalValueAtPoint += shares * price
                     } else {
                         const quote = quoteMap.get(holding.symbol);
                         const currentPrice = quote?.regularMarketPrice || 0;
