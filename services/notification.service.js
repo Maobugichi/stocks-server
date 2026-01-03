@@ -1,4 +1,4 @@
-import { sendNotifications } from "../getNotifs";
+import { sendNotifications } from "../getNotifs.js";
 
 class NotificationService {
   sendWatchlistUpdate(userId, ticker, action = 'added') {
