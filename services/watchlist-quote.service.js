@@ -1,5 +1,5 @@
 import yahooFinance from 'yahoo-finance2';
-import { WATCHLIST_CONFIG } from '../config/watchlist.config.js';
+import { WATCHLIST_CONFIG } from "../configs/watchlist.config.js"
 
 yahooFinance.setGlobalConfig({
   validation: { logErrors: false, logWarnings: false },
