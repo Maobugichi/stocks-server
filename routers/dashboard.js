@@ -1,9 +1,9 @@
 import { Router } from "express";
-import { checkAuth } from "../checkAuth.js";
+
 
 const dashboardRouter = Router();
 
-dashboardRouter.get("/", checkAuth, (req, res) => {
+dashboardRouter.get("/", (req, res) => {
   res.json({ message: "Dashboard data", user: req.user });
 });
 
