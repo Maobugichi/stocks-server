@@ -1,6 +1,6 @@
 import { Router } from "express";
 import pool from "../configs/db.js";
-import { checkAuth } from "../checkAuth.js";
+import { checkAuth } from "../middlewares/checkAuth.js";
 
 const onboardRouter =  Router();
 
