@@ -1,11 +1,10 @@
 import express from "express";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
-import router from "./routers/signup.js";
 import stockrouter from "./routers/fetchData.js";
 import cors from  "cors";
 import tickerRouter from "./routers/stockTickers.js";
-import { checkAuth } from "./checkAuth.js";
+import { checkAuth } from "./middlewares/checkAuth.js"
 import dashRouter from "./routers/dashboard.js";
 import loginRouter from "./routers/login.js";
 import savePortfolioRouter from "./routers/saveToPorfolio.js";

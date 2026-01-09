@@ -1,4 +1,4 @@
-import pool from "../db.js";
+import pool from "../configs/db";
 
 class WatchlistDataService {
     async getWatchlist(userId) {
