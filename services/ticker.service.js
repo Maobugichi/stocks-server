@@ -1,4 +1,4 @@
-import pool from "../db.js";
+import pool from "../configs/db.js";
 import cacheService from "./cache.service.js";
 import { CONFIG } from "../configs/yahoo-finance.config.js";
 

@@ -24,6 +24,7 @@ import onboardRouter from "./routers/onboarding.js";
 import trendingPageRouter from "./routers/trending.js";
 import authRouter from "./routers/logout.js";
 import signupRouter from "./routers/signup.js";
+import rateLimit from 'express-rate-limit';
 
 
 dotenv.config();
@@ -37,6 +38,14 @@ initSocket(server);
 
 app.use(express.json());
 app.use(cookieParser());
+
+
+const portfolioLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 10, // 10 requests per minute per user
+    message: 'Too many portfolio requests, please try again later'
+});
+
 
 app.use(
   cors({
@@ -67,7 +76,7 @@ app.use("/api/",checkAuth,dashRouter);
 app.use("/api/stocks/",stockrouter);
 app.use("/api/ticker/", tickerRouter);
 app.use("/api/save-port",savePortfolioRouter);
-app.use("/api/portfolio/",portfolioRouter);
+app.use("/api/portfolio/", portfolioLimiter , portfolioRouter);
 app.use("/api/watchlist/", checkAuth , watchlistRouter);
 //app.use("/api/getList/", checkAuth , watchListRouter);
 app.use("/api/news/", newsRouter);

@@ -1,188 +1,256 @@
-import axios from 'axios';
+import yahooFinance from 'yahoo-finance2';
+import cacheService from './cache.service.js';
 import { WATCHLIST_CONFIG } from "../configs/watchlist.config.js";
+import { fetchWithRetry, delay } from '../utils/retry.util.js';
+import { limiter } from '../utils/rate-limiter.util.js';
+import { CONFIG } from '../configs/yahoo-finance.config.js';
 
-const FINNHUB_BASE_URL = 'https://finnhub.io/api/v1';
-const FINNHUB_API_KEY = process.env.FINN_KEY;
+yahooFinance.setGlobalConfig({
+  validation: { logErrors: false, logWarnings: false },
+  validateResult: false,
+});
 
 class WatchlistQuoteService {
-  constructor() {
-    this.client = axios.create({
-      baseURL: FINNHUB_BASE_URL,
-      params: {
-        token: FINNHUB_API_KEY
-      }
-    });
-  }
-
+  /**
+   * ✅ IMPROVED: Added global caching for live quotes
+   */
   async fetchLiveQuotes(symbols) {
     if (!symbols || symbols.length === 0) {
       return [];
     }
 
-    try {
-      // Finnhub doesn't support batch quotes, so we need to fetch individually
-      // Add delays to respect rate limits (60 calls/min = ~1 call per second)
-      const quotes = [];
+    const results = [];
+    const uncachedSymbols = [];
+
+    // Check cache first
+    for (const symbol of symbols) {
+      const cacheKey = `watchlist_quote_${symbol}`;
+      const { data, hit } = cacheService.getGlobal(cacheKey);
       
-      for (const symbol of symbols) {
+      if (hit) {
+        results.push(data);
+      } else {
+        uncachedSymbols.push(symbol);
+      }
+    }
+
+    if (uncachedSymbols.length === 0) {
+      console.log(`All ${symbols.length} watchlist quotes from cache`);
+      return results;
+    }
+
+    console.log(`Fetching ${uncachedSymbols.length}/${symbols.length} uncached watchlist quotes`);
+
+    try {
+      // ✅ IMPROVED: Fetch in smaller batches with delays
+      const BATCH_SIZE = 5;
+      const BATCH_DELAY = 1000; // 1 second between batches
+
+      for (let i = 0; i < uncachedSymbols.length; i += BATCH_SIZE) {
+        const batch = uncachedSymbols.slice(i, i + BATCH_SIZE);
+
+        if (i > 0) {
+          await delay(BATCH_DELAY);
+        }
+
         try {
-          const response = await this.client.get('/quote', {
-            params: { symbol }
-          });
+          const quotes = await fetchWithRetry(
+            () => yahooFinance.quote(batch, { validateResult: false }),
+            { context: `watchlist-batch-${i / BATCH_SIZE + 1}` }
+          );
+
+          const quotesArray = Array.isArray(quotes) ? quotes : [quotes];
           
-          quotes.push({
-            symbol,
-            ...response.data
+          // Cache each quote individually
+          quotesArray.forEach(quote => {
+            if (quote?.symbol) {
+              const cacheKey = `watchlist_quote_${quote.symbol}`;
+              cacheService.setGlobal(cacheKey, quote, 120); // 2 minutes cache
+            }
           });
-          
-          // Add 1 second delay between requests to stay under rate limit
-          if (symbols.indexOf(symbol) < symbols.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1100));
-          }
+
+          results.push(...quotesArray);
         } catch (err) {
-          console.error(`Failed to fetch quote for ${symbol}:`, err.message);
-          quotes.push({
-            symbol,
-            error: true
-          });
+          console.error(`Batch ${i / BATCH_SIZE + 1} failed:`, err.message);
+          
+          // Fallback to individual fetching for failed batch
+          for (const symbol of batch) {
+            try {
+              await delay(500);
+              const quote = await fetchWithRetry(
+                () => yahooFinance.quote(symbol, { validateResult: false }),
+                { context: symbol, timeout: 5000, retries: 1 }
+              );
+              
+              const cacheKey = `watchlist_quote_${symbol}`;
+              cacheService.setGlobal(cacheKey, quote, 120);
+              results.push(quote);
+            } catch (symbolErr) {
+              console.error(`Failed to fetch ${symbol}:`, symbolErr.message);
+              results.push({ symbol, error: true, errorMessage: symbolErr.message });
+            }
+          }
         }
       }
 
-      return quotes;
+      return results;
     } catch (err) {
       console.error('Failed to fetch live quotes:', err.message);
       throw new Error('Unable to fetch market data');
     }
   }
 
+  /**
+   * ✅ IMPROVED: Added caching for single quote
+   */
   async fetchSingleQuote(ticker) {
+    const cacheKey = `watchlist_quote_${ticker}`;
+    const { data, hit } = cacheService.getGlobal(cacheKey);
+    
+    if (hit) {
+      console.log(`Cache hit for ${ticker}`);
+      return this.formatQuoteForStorage(data);
+    }
+
     try {
-      const response = await this.client.get('/quote', {
-        params: { symbol: ticker }
-      });
+      const quote = await fetchWithRetry(
+        () => yahooFinance.quote(ticker, { validateResult: false }),
+        { context: `quote-${ticker}` }
+      );
 
-      // Also fetch company profile for company name
-      const profileResponse = await this.client.get('/stock/profile2', {
-        params: { symbol: ticker }
-      });
+      // Cache for 2 minutes
+      cacheService.setGlobal(cacheKey, quote, 120);
 
-      return this.formatQuoteForStorage({
-        ...response.data,
-        profile: profileResponse.data
-      }, ticker);
+      return this.formatQuoteForStorage(quote);
     } catch (err) {
       console.error(`Failed to fetch quote for ${ticker}:`, err.message);
       throw new Error(`Ticker "${ticker}" not found or unavailable`);
     }
   }
 
+  /**
+   * ✅ IMPROVED: Added caching and better rate limiting for sparklines
+   */
   async fetchSparklineData(symbols) {
     if (!symbols || symbols.length === 0) {
       return [];
     }
 
-    const to = Math.floor(Date.now() / 1000);
-    const from = to - (WATCHLIST_CONFIG.SPARKLINE.DAYS * 24 * 60 * 60);
+    // ✅ CRITICAL: Limit sparkline fetching to prevent rate limits
+    const MAX_SPARKLINES = 15;
+    const symbolsToFetch = symbols.slice(0, MAX_SPARKLINES);
     
-    // Map interval format: '1d' -> 'D'
-    const resolution = WATCHLIST_CONFIG.SPARKLINE.INTERVAL === '1d' ? 'D' : 
-                       WATCHLIST_CONFIG.SPARKLINE.INTERVAL === '1h' ? '60' : 'D';
+    if (symbols.length > MAX_SPARKLINES) {
+      console.warn(
+        `Limiting sparkline fetch to ${MAX_SPARKLINES}/${symbols.length} symbols to avoid rate limits`
+      );
+    }
 
-    const sparklinePromises = symbols.map(async (symbol) => {
+    const period2 = Math.floor(Date.now() / 1000);
+    const period1 = period2 - WATCHLIST_CONFIG.SPARKLINE.DAYS * 24 * 60 * 60;
+
+    const results = [];
+    const uncachedSymbols = [];
+
+    // Check cache first
+    for (const symbol of symbolsToFetch) {
+      const cacheKey = `sparkline_${symbol}_${WATCHLIST_CONFIG.SPARKLINE.DAYS}d`;
+      const { data, hit } = cacheService.getGlobal(cacheKey);
+      
+      if (hit) {
+        results.push(data);
+      } else {
+        uncachedSymbols.push(symbol);
+      }
+    }
+
+    if (uncachedSymbols.length === 0) {
+      console.log(`All ${symbolsToFetch.length} sparklines from cache`);
+      
+      // Return empty sparklines for symbols beyond the limit
+      const emptySparklines = symbols.slice(MAX_SPARKLINES).map(symbol => ({
+        symbol,
+        timestamps: [],
+        closes: [],
+        limited: true
+      }));
+      
+      return [...results, ...emptySparklines];
+    }
+
+    console.log(`Fetching ${uncachedSymbols.length}/${symbolsToFetch.length} uncached sparklines`);
+
+    // ✅ IMPROVED: Increased delay between sparkline requests
+    const SPARKLINE_DELAY = 800; // Increased from 250ms to 800ms
+
+    for (let i = 0; i < uncachedSymbols.length; i++) {
+      const symbol = uncachedSymbols[i];
+
+      if (i > 0) {
+        await delay(SPARKLINE_DELAY);
+      }
+
       try {
-        // Add delay to respect rate limits
-        await new Promise(resolve => 
-          setTimeout(resolve, symbols.indexOf(symbol) * 1100)
+        const chart = await fetchWithRetry(
+          () => yahooFinance.chart(symbol, {
+            period1,
+            period2,
+            interval: WATCHLIST_CONFIG.SPARKLINE.INTERVAL,
+          }),
+          { 
+            context: `sparkline-${symbol}`,
+            timeout: 8000,
+            retries: 1
+          }
         );
 
-        const response = await this.client.get('/stock/candle', {
-          params: {
-            symbol,
-            resolution,
-            from,
-            to
-          }
-        });
-
-        const data = response.data;
-
-        // Finnhub returns 's': 'no_data' when no data is available
-        if (data.s === 'no_data' || !data.t || !data.c) {
-          return {
-            symbol,
-            timestamps: [],
-            closes: [],
-          };
-        }
-
-        return {
+        const quotes = chart.quotes || [];
+        const sparklineData = {
           symbol,
-          timestamps: data.t.map(ts => new Date(ts * 1000)),
-          closes: data.c,
+          timestamps: quotes.map((q) => q.date),
+          closes: quotes.map((q) => q.close),
         };
+
+        // Cache sparklines for 10 minutes (they don't change often)
+        const cacheKey = `sparkline_${symbol}_${WATCHLIST_CONFIG.SPARKLINE.DAYS}d`;
+        cacheService.setGlobal(cacheKey, sparklineData, 600);
+
+        results.push(sparklineData);
       } catch (err) {
         console.error(`Sparkline failed for ${symbol}:`, err.message);
-        return {
+        results.push({
           symbol,
           timestamps: [],
           closes: [],
-        };
+          error: true
+        });
       }
-    });
+    }
 
-    return await Promise.all(sparklinePromises);
+    // Add empty sparklines for symbols beyond the limit
+    const emptySparklines = symbols.slice(MAX_SPARKLINES).map(symbol => ({
+      symbol,
+      timestamps: [],
+      closes: [],
+      limited: true
+    }));
+
+    return [...results, ...emptySparklines];
   }
 
-  formatQuoteForStorage(quote, symbol) {
-    // Finnhub quote response format:
-    // c: Current price
-    // d: Change
-    // dp: Percent change
-    // h: High price of the day
-    // l: Low price of the day
-    // o: Open price of the day
-    // pc: Previous close price
-    
+  formatQuoteForStorage(quote) {
     return {
-      symbol: symbol,
-      company_name: quote.profile?.name || symbol,
-      current_price: quote.c || null,
-      change_percent_daily: quote.dp || null,
-      market_cap: quote.profile?.marketCapitalization ? 
-                   quote.profile.marketCapitalization * 1000000 : null, // Finnhub returns in millions
-      volume: null, // Not available in quote endpoint, use candle endpoint instead
-      average_volume: null, // Not available in free tier
-      fifty_two_week_high: quote.h || null,
-      fifty_two_week_low: quote.l || null,
-      pe_ratio: null, // Available in company_basic_financials endpoint
+      symbol: quote.symbol,
+      company_name: quote.shortName || quote.longName || quote.symbol,
+      current_price: quote.regularMarketPrice || null,
+      change_percent_daily: quote.regularMarketChangePercent || null,
+      market_cap: quote.marketCap || null,
+      volume: quote.regularMarketVolume || null,
+      average_volume: quote.averageDailyVolume3Month || null,
+      fifty_two_week_high: quote.fiftyTwoWeekHigh || null,
+      fifty_two_week_low: quote.fiftyTwoWeekLow || null,
+      pe_ratio: quote.trailingPE || null,
     };
-  }
-
-  async fetchCompanyProfile(symbol) {
-    try {
-      const response = await this.client.get('/stock/profile2', {
-        params: { symbol }
-      });
-      return response.data;
-    } catch (err) {
-      console.error(`Failed to fetch profile for ${symbol}:`, err.message);
-      return null;
-    }
-  }
-
-  async fetchBasicFinancials(symbol) {
-    try {
-      const response = await this.client.get('/stock/metric', {
-        params: { 
-          symbol,
-          metric: 'all'
-        }
-      });
-      return response.data;
-    } catch (err) {
-      console.error(`Failed to fetch financials for ${symbol}:`, err.message);
-      return null;
-    }
   }
 
   mergeWatchlistWithLiveData(watchlist, liveData, sparklineData) {
@@ -190,72 +258,23 @@ class WatchlistQuoteService {
       const live = liveData.find((data) => data.symbol === item.symbol);
       const spark = sparklineData.find((s) => s.symbol === item.symbol);
 
-      // Finnhub quote format:
-      // c: current price
-      // dp: percent change
-      // h: high
-      // l: low
-      
       return {
         symbol: item.symbol,
         company_name: item.company_name,
-        current_price: live?.c || null,
-        change_percent_daily: live?.dp || null,
-        change_percent_weekly: null, // Would need to calculate from historical data
-        market_cap: item.market_cap,
-        volume: null, // Not in quote endpoint
-        average_volume: item.average_volume,
-        fifty_two_week_high: live?.h || item.fifty_two_week_high,
-        fifty_two_week_low: live?.l || item.fifty_two_week_low,
+        current_price: live?.regularMarketPrice || null,
+        change_percent_daily: live?.regularMarketChangePercent || null,
+        change_percent_weekly: live?.fiftyTwoWeekChangePercent || null,
+        market_cap: live?.marketCap || null,
+        volume: live?.regularMarketVolume || null,
+        average_volume: live?.averageDailyVolume3Month || null,
+        fifty_two_week_high: item.fifty_two_week_high,
+        fifty_two_week_low: item.fifty_two_week_low,
         pe_ratio: item.pe_ratio,
         sparkline: {
           timestamps: spark?.timestamps || [],
           closes: spark?.closes || [],
+          limited: spark?.limited || false
         },
-      };
-    });
-  }
-
-  // Helper method to batch requests with rate limiting
-  async batchFetchWithRateLimit(symbols, fetchFn, delayMs = 1100) {
-    const results = [];
-    
-    for (let i = 0; i < symbols.length; i++) {
-      const symbol = symbols[i];
-      
-      try {
-        const result = await fetchFn(symbol);
-        results.push(result);
-        
-        // Add delay between requests (except for the last one)
-        if (i < symbols.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, delayMs));
-        }
-      } catch (err) {
-        console.error(`Failed to fetch ${symbol}:`, err.message);
-        results.push({ symbol, error: true });
-      }
-    }
-    
-    return results;
-  }
-
-  // Enhanced version with profile data
-  async fetchEnhancedQuotes(symbols) {
-    if (!symbols || symbols.length === 0) {
-      return [];
-    }
-
-    return await this.batchFetchWithRateLimit(symbols, async (symbol) => {
-      const [quoteResponse, profileResponse] = await Promise.all([
-        this.client.get('/quote', { params: { symbol } }),
-        this.client.get('/stock/profile2', { params: { symbol } })
-      ]);
-
-      return {
-        symbol,
-        quote: quoteResponse.data,
-        profile: profileResponse.data
       };
     });
   }
