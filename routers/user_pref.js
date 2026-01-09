@@ -1,10 +1,10 @@
-
 import { Router } from "express";
-import pool from "../db.js";
-import { checkAuth } from "../checkAuth.js";
+import pool from "../configs/db.js";
+
 
 const prefRouter = Router();
-prefRouter.use(checkAuth);
+
+
 
 prefRouter.patch("/preferences/markets", async (req, res) => {
   const { preferredMarkets } = req.body;
@@ -804,13 +804,13 @@ async function getUniqueMarkets() {
 }
 
 // Cron Job to Refresh Trending Cache and Expanded Stocks
-cron.schedule('*/5 * * * *', async () => {
-  console.log('Running cron to refresh trending cache and expanded stocks');
-  const markets = await getUniqueMarkets();
-  console.log('Cron markets from user_preferences:', markets);
+/*cron.schedule('*/5 * * * *', async () => {
+  //console.log('Running cron to refresh trending cache and expanded stocks');
+  //const markets = await getUniqueMarkets();
+  //console.log('Cron markets from user_preferences:', markets);
 
   // Cache trending stocks
-  for (const market of markets) {
+  /*for (const market of markets) {
     try {
       let trends = [];
       if (market === 'US') {
@@ -851,7 +851,7 @@ cron.schedule('*/5 * * * *', async () => {
     } catch (err) {
       console.error(`Cron: Error processing trending ${market}:`, err.message);
     }
-  }
+  //}
 
   // Cache expanded stocks
   const expanded = await fetchExpandedStocks(markets, 100);
@@ -1127,4 +1127,4 @@ trendingRouter.get("/trending-stock", async (req, res) => {
   }
 });
 
-export default trendingRouter; /*
+//export default trendingRouter;*/

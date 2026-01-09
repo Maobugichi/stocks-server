@@ -75,7 +75,7 @@ app.use("/api/",checkAuth,dashRouter);
 app.use("/api/stocks/",stockrouter);
 app.use("/api/ticker/", tickerRouter);
 app.use("/api/save-port",savePortfolioRouter);
-app.use("/api/portfolio/", portfolioLimiter , portfolioRouter);
+app.use("/api/portfolio/", checkAuth, portfolioLimiter , portfolioRouter);
 app.use("/api/watchlist/", checkAuth , watchlistRouter);
 //app.use("/api/getList/", checkAuth , watchListRouter);
 app.use("/api/news/", newsRouter);

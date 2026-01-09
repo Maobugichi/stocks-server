@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import portfolioController from '../controllers/portfolio.controller.js';
-import { checkAuth } from '../checkAuth.js';
 import {
   validateAddHoldingMiddleware,
   validateUpdateHoldingMiddleware,
@@ -12,7 +11,6 @@ const portfolioRouter = Router();
 
 portfolioRouter.get(
   '/',
-  checkAuth,
   portfolioController.getPortfolio.bind(portfolioController)
 );
 
