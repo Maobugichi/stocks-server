@@ -1,5 +1,5 @@
 import { Router } from "express";
-import pool from "../db.js";
+import pool from "../configs/db.js";
 import { sendNotifications } from "../getNotifs.js";
 
 const alertRouter = Router();
